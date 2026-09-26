@@ -1,0 +1,12 @@
+Dim x = 10
+Dim pi = 3.14
+Dim name = "Visual Basic X"
+Print x
+Print pi
+Print name
+
+x = x + 5
+Dim total = x * 2
+Print total
+
+Print "Result: " + x
