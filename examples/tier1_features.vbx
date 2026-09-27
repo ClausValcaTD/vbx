@@ -1,0 +1,29 @@
+' Tier-1 Core Features Example for VBX
+Const MAX_COUNT = 5
+Const APP_NAME = "VBX Tier-1 Demo"
+
+Print "Starting " & APP_NAME
+
+Dim scores(MAX_COUNT)
+Dim names[MAX_COUNT]
+
+For i = 0 To MAX_COUNT - 1
+    scores(i) = (i + 1) * 10
+    names[i] = "Item_" & Str(scores[i])
+Next i
+
+Print "Populated arrays:"
+For i = 0 To MAX_COUNT - 1
+    If i == 3 Then
+        Print "Early exit at index " & i
+        Exit For
+    End If
+    Print names[i] & " has score: " & Str(scores(i))
+Next i
+
+Dim strVal = "123"
+Dim numVal = Val(strVal)
+Print "Converted string '" & strVal & "' to number: " & (numVal + 7)
+
+Dim strNum = Str(999)
+Print "Converted number 999 to string: '" & strNum & "'"
