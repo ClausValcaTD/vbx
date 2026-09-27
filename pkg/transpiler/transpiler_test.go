@@ -153,3 +153,109 @@ func TestBuildAndRunVariables(t *testing.T) {
 		t.Fatalf("BuildAndRun failed: %v", err)
 	}
 }
+
+func TestTranspileControlFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_control_flow.vbx")
+	content := []byte(`
+For i = 1 To 3
+    If i % 2 == 0 Then
+        Print i
+    Else
+        Print i + 10
+    End If
+Next i
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"for (long long i = 1LL; i <= 3LL; i++) {",
+		"if (((i % 2LL) == 0LL)) {",
+		"printf(\"%lld\\n\", i);",
+		"} else {",
+		"printf(\"%lld\\n\", (i + 10LL));",
+		"}",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileControlFlowErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "Else without If",
+			content: "Else\nPrint 1\nEnd If",
+		},
+		{
+			name:    "End If without If",
+			content: "End If",
+		},
+		{
+			name:    "Next without For",
+			content: "Next i",
+		},
+		{
+			name:    "Mismatched Next Variable",
+			content: "For i = 1 To 5\nNext j",
+		},
+		{
+			name:    "Unclosed If block",
+			content: "If 1 == 1 Then\nPrint 1",
+		},
+		{
+			name:    "Unclosed For block",
+			content: "For i = 1 To 5\nPrint i",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			vbxFile := filepath.Join(tmpDir, "err.vbx")
+			if err := os.WriteFile(vbxFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write temp vbx file: %v", err)
+			}
+
+			_, err := Transpile(vbxFile)
+			if err == nil {
+				t.Errorf("Expected transpile error for %q, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestBuildAndRunControlFlow(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "run_control_flow.vbx")
+	content := []byte(`
+Dim sum = 0
+For i = 1 To 5
+    If i > 2 Then
+        sum = sum + i
+    End If
+Next i
+Print sum
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed: %v", err)
+	}
+}

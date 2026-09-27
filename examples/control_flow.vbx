@@ -1,0 +1,22 @@
+Print "--- For Loop Example ---"
+For i = 1 To 5
+    If i % 2 == 0 Then
+        Print i + " is even"
+    Else
+        Print i + " is odd"
+    End If
+Next i
+
+Print "--- Conditional Comparisons ---"
+Dim x = 10
+Dim y = 20
+
+If x < y Then
+    Print "x is less than y"
+Else
+    Print "x is not less than y"
+End If
+
+If x = 10 Then
+    Print "x equals 10"
+End If
