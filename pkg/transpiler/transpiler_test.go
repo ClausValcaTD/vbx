@@ -334,3 +334,154 @@ MsgBox "Value: " + x, "Test Title"
 		t.Fatalf("BuildAndRun failed: %v", err)
 	}
 }
+
+func TestTranspileSubroutinesAndFunctions(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_funcs.vbx")
+	content := []byte(`
+Sub Greet(name)
+    Print "Hello, " + name
+End Sub
+
+Function AddNumbers(a, b)
+    Return a + b
+End Function
+
+Greet "Ahmed"
+Greet("Visual Basic X")
+Dim total = AddNumbers(10, 20)
+Print total
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"void Greet(const char* name);",
+		"long long AddNumbers(long long a, long long b);",
+		"void Greet(const char* name) {",
+		"long long AddNumbers(long long a, long long b) {",
+		"return (a + b);",
+		"Greet(\"Ahmed\");",
+		"Greet(\"Visual Basic X\");",
+		"long long total = AddNumbers(10LL, 20LL);",
+		"printf(\"%lld\\n\", total);",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileSubroutinesAndFunctionsErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "Return value in Subroutine",
+			content: `
+Sub Greet(name)
+    Return 123
+End Sub
+`,
+		},
+		{
+			name: "Return without expression in Function",
+			content: `
+Function Add(a, b)
+    Return
+End Function
+`,
+		},
+		{
+			name: "Unclosed Sub block",
+			content: `
+Sub Greet(name)
+    Print name
+`,
+		},
+		{
+			name: "Unclosed Function block",
+			content: `
+Function Calc(a)
+    Return a * 2
+`,
+		},
+		{
+			name:    "End Sub without Sub",
+			content: "End Sub",
+		},
+		{
+			name:    "End Function without Function",
+			content: "End Function",
+		},
+		{
+			name: "Argument count mismatch",
+			content: `
+Function Add(a, b)
+    Return a + b
+End Function
+
+Dim x = Add(10)
+`,
+		},
+		{
+			name: "Nested Sub definition",
+			content: `
+Sub Outer()
+    Sub Inner()
+    End Sub
+End Sub
+`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			vbxFile := filepath.Join(tmpDir, "err.vbx")
+			if err := os.WriteFile(vbxFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write temp vbx file: %v", err)
+			}
+
+			_, err := Transpile(vbxFile)
+			if err == nil {
+				t.Errorf("Expected transpile error for %q, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestBuildAndRunSubroutinesAndFunctions(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "run_funcs.vbx")
+	content := []byte(`
+Sub SayHi(name)
+    Print "Hi " + name
+End Sub
+
+Function Square(n)
+    Return n * n
+End Function
+
+SayHi "Alice"
+Dim res = Square(6)
+Print res
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed: %v", err)
+	}
+}

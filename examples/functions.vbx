@@ -1,0 +1,17 @@
+' Visual Basic X Subroutines and Functions Example
+
+Sub Greet(name)
+    MsgBox "Hello, " + name
+End Sub
+
+Function AddNumbers(a, b)
+    Return a + b
+End Function
+
+' Call Subroutine with space syntax and paren syntax
+Greet "Ahmed"
+Greet("Visual Basic X")
+
+' Call Function in expression
+Dim total = AddNumbers(10, 20)
+Print "Total: " + total
