@@ -1009,3 +1009,157 @@ func TestBuildAndRunTier1Example(t *testing.T) {
 		t.Fatalf("BuildAndRun examples/tier1_features.vbx failed: %v", err)
 	}
 }
+
+func TestStringHelpersInLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "loop_str.vbx")
+	content := []byte(`
+Dim res = ""
+For i = 1 To 10000
+    res = "item_" & i
+Next i
+Print res
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed for 10,000 concat iterations: %v", err)
+	}
+}
+
+func TestTrimInLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "loop_trim.vbx")
+	content := []byte(`
+Dim lastTrimmed = ""
+For i = 1 To 1000
+    Dim s = "   hello " & i & "   "
+    lastTrimmed = Trim(s)
+Next i
+Print lastTrimmed
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed for 1,000 Trim iterations: %v", err)
+	}
+}
+
+func TestReplaceInLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "loop_replace.vbx")
+	content := []byte(`
+Dim lastReplaced = ""
+For i = 1 To 1000
+    Dim s = "foo_" & i
+    lastReplaced = Replace(s, "foo", "bar")
+Next i
+Print lastReplaced
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed for 1,000 Replace iterations: %v", err)
+	}
+}
+
+func TestErrorFormattingLineNumbersAndPreview(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	t.Run("Undefined variable error format", func(t *testing.T) {
+		vbxFile := filepath.Join(tmpDir, "undef_line.vbx")
+		content := []byte("Dim a = 1\nDim b = 2\nDim total = foo + 10")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error, got nil")
+		}
+		errMsg := err.Error()
+		expectedHeader := "VBX Error on line 3: undefined variable 'foo'"
+		expectedSource := "Dim total = foo + 10"
+		if !strings.Contains(errMsg, expectedHeader) {
+			t.Errorf("Expected error header %q, got:\n%s", expectedHeader, errMsg)
+		}
+		if !strings.Contains(errMsg, expectedSource) {
+			t.Errorf("Expected error preview %q, got:\n%s", expectedSource, errMsg)
+		}
+	})
+
+	t.Run("Unclosed If error format shows opening line", func(t *testing.T) {
+		vbxFile := filepath.Join(tmpDir, "unclosed_if.vbx")
+		content := []byte("Dim x = 1\nIf x == 1 Then\nPrint x\n' Missing End If")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error, got nil")
+		}
+		errMsg := err.Error()
+		expectedHeader := "VBX Error on line 2: unclosed If block"
+		expectedSource := "If x == 1 Then"
+		if !strings.Contains(errMsg, expectedHeader) {
+			t.Errorf("Expected error header %q, got:\n%s", expectedHeader, errMsg)
+		}
+		if !strings.Contains(errMsg, expectedSource) {
+			t.Errorf("Expected error preview %q, got:\n%s", expectedSource, errMsg)
+		}
+	})
+
+	t.Run("Type mismatch error format", func(t *testing.T) {
+		vbxFile := filepath.Join(tmpDir, "type_mismatch.vbx")
+		content := []byte("Dim s = \"hello\"\nDim n = 10\nDim res = s % n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error, got nil")
+		}
+		errMsg := err.Error()
+		expectedHeader := "VBX Error on line 3:"
+		expectedSource := "Dim res = s % n"
+		if !strings.Contains(errMsg, expectedHeader) {
+			t.Errorf("Expected error header %q, got:\n%s", expectedHeader, errMsg)
+		}
+		if !strings.Contains(errMsg, expectedSource) {
+			t.Errorf("Expected error preview %q, got:\n%s", expectedSource, errMsg)
+		}
+	})
+
+	t.Run("Exit For outside loop error format", func(t *testing.T) {
+		vbxFile := filepath.Join(tmpDir, "exit_for_outside.vbx")
+		content := []byte("Dim x = 1\nExit For")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error, got nil")
+		}
+		errMsg := err.Error()
+		expectedHeader := "VBX Error on line 2: Exit For outside of For loop"
+		expectedSource := "Exit For"
+		if !strings.Contains(errMsg, expectedHeader) {
+			t.Errorf("Expected error header %q, got:\n%s", expectedHeader, errMsg)
+		}
+		if !strings.Contains(errMsg, expectedSource) {
+			t.Errorf("Expected error preview %q, got:\n%s", expectedSource, errMsg)
+		}
+	})
+}

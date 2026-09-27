@@ -11,6 +11,13 @@ import (
 	"strings"
 )
 
+
+func vbxError(lineNum int, source string, msg string) error {
+	return fmt.Errorf(
+		"VBX Error on line %d: %s\n  %s",
+		lineNum, msg, strings.TrimSpace(source))
+}
+
 type DataType string
 
 const (
@@ -65,14 +72,14 @@ type VarNode struct {
 func (v *VarNode) ExprType(env map[string]DataType) (DataType, error) {
 	t, ok := env[v.Name]
 	if !ok {
-		return TypeUnknown, fmt.Errorf("undefined variable: %s", v.Name)
+		return TypeUnknown, fmt.Errorf("undefined variable '%s'", v.Name)
 	}
 	return t, nil
 }
 
 func (v *VarNode) ToC(env map[string]DataType) (string, error) {
 	if _, ok := env[v.Name]; !ok {
-		return "", fmt.Errorf("undefined variable: %s", v.Name)
+		return "", fmt.Errorf("undefined variable '%s'", v.Name)
 	}
 	return v.Name, nil
 }
@@ -119,6 +126,8 @@ type FunctionInfo struct {
 	Params     []ParamInfo
 	ReturnType DataType
 	BodyLines  []LineInfo
+	LineNum    int
+	Source     string
 }
 
 type LineInfo struct {
@@ -133,7 +142,7 @@ type CallNode struct {
 }
 
 func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
-	if c.Name == "InputBox" || c.Name == "File.Read" || c.Name == "UCase" || c.Name == "LCase" || c.Name == "Left" || c.Name == "Right" || c.Name == "Mid" || c.Name == "Str" {
+	if c.Name == "InputBox" || c.Name == "File.Read" || c.Name == "UCase" || c.Name == "LCase" || c.Name == "Left" || c.Name == "Right" || c.Name == "Mid" || c.Name == "Trim" || c.Name == "Replace" || c.Name == "Str" {
 		return TypeString, nil
 	}
 	if c.Name == "Len" {
@@ -279,6 +288,62 @@ func (c *CallNode) ToC(env map[string]DataType) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("vbx_mid(%s, %s, %s)", arg0C, arg1C, arg2C), nil
+	}
+	if c.Name == "Trim" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("Trim requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_trim(%s)", arg0C), nil
+	}
+	if c.Name == "Replace" {
+		if len(c.Args) != 3 {
+			return "", fmt.Errorf("Replace requires 3 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1C, err := formatStringArg(c.Args[1], env)
+		if err != nil {
+			return "", err
+		}
+		arg2C, err := formatStringArg(c.Args[2], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_replace(%s, %s, %s)", arg0C, arg1C, arg2C), nil
+	}
+	if c.Name == "Trim" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("Trim requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_trim(%s)", arg0C), nil
+	}
+	if c.Name == "Replace" {
+		if len(c.Args) != 3 {
+			return "", fmt.Errorf("Replace requires 3 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1C, err := formatStringArg(c.Args[1], env)
+		if err != nil {
+			return "", err
+		}
+		arg2C, err := formatStringArg(c.Args[2], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_replace(%s, %s, %s)", arg0C, arg1C, arg2C), nil
 	}
 	if c.Name == "InputBox" {
 		if len(c.Args) < 1 || len(c.Args) > 2 {
@@ -818,7 +883,7 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 				isFn = true
 			} else {
 				switch ident {
-				case "InputBox", "File.Read", "Len", "UCase", "LCase", "Left", "Right", "Mid", "Val", "Str":
+				case "InputBox", "File.Read", "Len", "UCase", "LCase", "Left", "Right", "Mid", "Trim", "Replace", "Val", "Str":
 					isFn = true
 				}
 			}
@@ -926,8 +991,10 @@ const (
 )
 
 type blockInfo struct {
-	kind   blockKind
-	forVar string
+	kind    blockKind
+	forVar  string
+	lineNum int
+	source  string
 }
 
 func splitCommaArgs(raw string) ([]string, error) {
@@ -1054,7 +1121,7 @@ func Transpile(vbxPath string) (string, error) {
 		line := l.Text
 		if matches := subHeaderRegex.FindStringSubmatch(line); len(matches) > 1 {
 			if currentFunc != nil {
-				return "", fmt.Errorf("syntax error on line %d: nested Sub or Function definition is not allowed", l.LineNum)
+				return "", vbxError(l.LineNum, l.Text, "nested Sub or Function definition is not allowed")
 			}
 			fnName := matches[1]
 			rawParams := ""
@@ -1063,13 +1130,13 @@ func Transpile(vbxPath string) (string, error) {
 			}
 			paramNames, err := splitCommaArgs(rawParams)
 			if err != nil {
-				return "", fmt.Errorf("syntax error on line %d in parameter list: %w", l.LineNum, err)
+				return "", vbxError(l.LineNum, l.Text, fmt.Sprintf("invalid parameter list: %v", err))
 			}
 			var params []ParamInfo
 			for _, pName := range paramNames {
 				pName = strings.TrimSpace(pName)
 				if pName == "" {
-					return "", fmt.Errorf("syntax error on line %d: empty parameter name", l.LineNum)
+					return "", vbxError(l.LineNum, l.Text, "empty parameter name")
 				}
 				params = append(params, ParamInfo{Name: pName, Type: TypeInt})
 			}
@@ -1078,6 +1145,8 @@ func Transpile(vbxPath string) (string, error) {
 				IsSub:      true,
 				Params:     params,
 				ReturnType: TypeVoid,
+				LineNum:    l.LineNum,
+				Source:     l.Text,
 			}
 			functions = append(functions, fn)
 			funcMap[fnName] = fn
@@ -1088,7 +1157,7 @@ func Transpile(vbxPath string) (string, error) {
 
 		if matches := funcHeaderRegex.FindStringSubmatch(line); len(matches) > 1 {
 			if currentFunc != nil {
-				return "", fmt.Errorf("syntax error on line %d: nested Sub or Function definition is not allowed", l.LineNum)
+				return "", vbxError(l.LineNum, l.Text, "nested Sub or Function definition is not allowed")
 			}
 			fnName := matches[1]
 			rawParams := ""
@@ -1097,13 +1166,13 @@ func Transpile(vbxPath string) (string, error) {
 			}
 			paramNames, err := splitCommaArgs(rawParams)
 			if err != nil {
-				return "", fmt.Errorf("syntax error on line %d in parameter list: %w", l.LineNum, err)
+				return "", vbxError(l.LineNum, l.Text, fmt.Sprintf("invalid parameter list: %v", err))
 			}
 			var params []ParamInfo
 			for _, pName := range paramNames {
 				pName = strings.TrimSpace(pName)
 				if pName == "" {
-					return "", fmt.Errorf("syntax error on line %d: empty parameter name", l.LineNum)
+					return "", vbxError(l.LineNum, l.Text, "empty parameter name")
 				}
 				params = append(params, ParamInfo{Name: pName, Type: TypeInt})
 			}
@@ -1112,6 +1181,8 @@ func Transpile(vbxPath string) (string, error) {
 				IsSub:      false,
 				Params:     params,
 				ReturnType: TypeInt,
+				LineNum:    l.LineNum,
+				Source:     l.Text,
 			}
 			functions = append(functions, fn)
 			funcMap[fnName] = fn
@@ -1122,7 +1193,7 @@ func Transpile(vbxPath string) (string, error) {
 
 		if endSubRegex.MatchString(line) {
 			if currentFunc == nil || !currentFunc.IsSub {
-				return "", fmt.Errorf("syntax error on line %d: End Sub without matching Sub", l.LineNum)
+				return "", vbxError(l.LineNum, l.Text, "End Sub without matching Sub")
 			}
 			currentFunc = nil
 			continue
@@ -1130,7 +1201,7 @@ func Transpile(vbxPath string) (string, error) {
 
 		if endFuncRegex.MatchString(line) {
 			if currentFunc == nil || currentFunc.IsSub {
-				return "", fmt.Errorf("syntax error on line %d: End Function without matching Function", l.LineNum)
+				return "", vbxError(l.LineNum, l.Text, "End Function without matching Function")
 			}
 			currentFunc = nil
 			continue
@@ -1145,9 +1216,9 @@ func Transpile(vbxPath string) (string, error) {
 
 	if currentFunc != nil {
 		if currentFunc.IsSub {
-			return "", fmt.Errorf("syntax error: unclosed Sub block %s at end of file", currentFunc.Name)
+			return "", vbxError(currentFunc.LineNum, currentFunc.Source, fmt.Sprintf("unclosed Sub block %s at end of file", currentFunc.Name))
 		} else {
-			return "", fmt.Errorf("syntax error: unclosed Function block %s at end of file", currentFunc.Name)
+			return "", vbxError(currentFunc.LineNum, currentFunc.Source, fmt.Sprintf("unclosed Function block %s at end of file", currentFunc.Name))
 		}
 	}
 
@@ -1160,6 +1231,10 @@ func Transpile(vbxPath string) (string, error) {
 	globalEnv["Left"] = TypeString
 	globalEnv["Right"] = TypeString
 	globalEnv["Mid"] = TypeString
+	globalEnv["Trim"] = TypeString
+	globalEnv["Replace"] = TypeString
+	globalEnv["Trim"] = TypeString
+	globalEnv["Replace"] = TypeString
 	globalEnv["Val"] = TypeInt
 	globalEnv["Str"] = TypeString
 	for _, fn := range functions {
@@ -1299,7 +1374,7 @@ func Transpile(vbxPath string) (string, error) {
 						if len(call.Args) != 1 {
 							return fmt.Errorf("type error: File.Read expected 1 argument, got %d", len(call.Args))
 						}
-					case "Len", "UCase", "LCase", "Val", "Str":
+					case "Len", "UCase", "LCase", "Trim", "Val", "Str":
 						if len(call.Args) != 1 {
 							return fmt.Errorf("type error: %s expected 1 argument, got %d", call.Name, len(call.Args))
 						}
@@ -1307,7 +1382,7 @@ func Transpile(vbxPath string) (string, error) {
 						if len(call.Args) != 2 {
 							return fmt.Errorf("type error: %s expected 2 arguments, got %d", call.Name, len(call.Args))
 						}
-					case "Mid":
+					case "Mid", "Replace":
 						if len(call.Args) != 3 {
 							return fmt.Errorf("type error: %s expected 3 arguments, got %d", call.Name, len(call.Args))
 						}
@@ -1402,18 +1477,18 @@ func Transpile(vbxPath string) (string, error) {
 				condStr := matches[1]
 				condNode, err := parseExprWithFunctions(condStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid condition in If statement: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid condition in If statement: %v", err))
 				}
 				_, err = condNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if err := validateCalls(condNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cCond, err := condNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
 					needsConcatHelper = true
@@ -1428,33 +1503,33 @@ func Transpile(vbxPath string) (string, error) {
 					needsString = true
 				}
 				stmts = append(stmts, fmt.Sprintf("%sif (%s) {", indent, cCond))
-				blockStack = append(blockStack, blockInfo{kind: blockIf})
+				blockStack = append(blockStack, blockInfo{kind: blockIf, lineNum: lineNum, source: line})
 			} else if matches := elseIfRegex.FindStringSubmatch(line); len(matches) > 1 {
 				if len(blockStack) == 0 {
-					return nil, fmt.Errorf("syntax error on line %d: ElseIf without matching If", lineNum)
+					return nil, vbxError(lineNum, line, "ElseIf without matching If")
 				}
 				topKind := blockStack[len(blockStack)-1].kind
 				if topKind == blockElse {
-					return nil, fmt.Errorf("syntax error on line %d: ElseIf after Else", lineNum)
+					return nil, vbxError(lineNum, line, "ElseIf after Else")
 				}
 				if topKind != blockIf && topKind != blockElseIf {
-					return nil, fmt.Errorf("syntax error on line %d: ElseIf without matching If", lineNum)
+					return nil, vbxError(lineNum, line, "ElseIf without matching If")
 				}
 				condStr := matches[1]
 				condNode, err := parseExprWithFunctions(condStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid condition in ElseIf statement: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid condition in ElseIf statement: %v", err))
 				}
 				_, err = condNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if err := validateCalls(condNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cCond, err := condNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
 					needsConcatHelper = true
@@ -1470,17 +1545,17 @@ func Transpile(vbxPath string) (string, error) {
 				}
 				outerIndent := strings.Repeat("    ", len(blockStack)-1)
 				stmts = append(stmts, fmt.Sprintf("%s} else if (%s) {", outerIndent, cCond))
-				blockStack[len(blockStack)-1] = blockInfo{kind: blockElseIf}
+				blockStack[len(blockStack)-1] = blockInfo{kind: blockElseIf, lineNum: lineNum, source: line}
 			} else if elseRegex.MatchString(line) {
 				if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElseIf) {
-					return nil, fmt.Errorf("syntax error on line %d: Else without matching If", lineNum)
+					return nil, vbxError(lineNum, line, "Else without matching If")
 				}
-				blockStack[len(blockStack)-1] = blockInfo{kind: blockElse}
+				blockStack[len(blockStack)-1] = blockInfo{kind: blockElse, lineNum: lineNum, source: line}
 				outerIndent := strings.Repeat("    ", len(blockStack)-1)
 				stmts = append(stmts, fmt.Sprintf("%s} else {", outerIndent))
 			} else if endIfRegex.MatchString(line) {
 				if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElseIf && blockStack[len(blockStack)-1].kind != blockElse) {
-					return nil, fmt.Errorf("syntax error on line %d: End If without matching If", lineNum)
+					return nil, vbxError(lineNum, line, "End If without matching If")
 				}
 				blockStack = blockStack[:len(blockStack)-1]
 				outerIndent := strings.Repeat("    ", len(blockStack))
@@ -1489,18 +1564,18 @@ func Transpile(vbxPath string) (string, error) {
 				condStr := matches[1]
 				condNode, err := parseExprWithFunctions(condStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid condition in While statement: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid condition in While statement: %v", err))
 				}
 				_, err = condNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if err := validateCalls(condNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cCond, err := condNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
 					needsConcatHelper = true
@@ -1515,10 +1590,10 @@ func Transpile(vbxPath string) (string, error) {
 					needsString = true
 				}
 				stmts = append(stmts, fmt.Sprintf("%swhile (%s) {", indent, cCond))
-				blockStack = append(blockStack, blockInfo{kind: blockWhile})
+				blockStack = append(blockStack, blockInfo{kind: blockWhile, lineNum: lineNum, source: line})
 			} else if wendRegex.MatchString(line) {
 				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockWhile {
-					return nil, fmt.Errorf("syntax error on line %d: Wend without matching While", lineNum)
+					return nil, vbxError(lineNum, line, "Wend without matching While")
 				}
 				blockStack = blockStack[:len(blockStack)-1]
 				outerIndent := strings.Repeat("    ", len(blockStack))
@@ -1530,34 +1605,34 @@ func Transpile(vbxPath string) (string, error) {
 
 				startNode, err := parseExprWithFunctions(startExprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid start expression in For loop: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid start expression in For loop: %v", err))
 				}
 				startDt, err := startNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if startDt != TypeInt {
-					return nil, fmt.Errorf("type error on line %d: For loop start expression must be integer", lineNum)
+					return nil, vbxError(lineNum, line, "For loop start expression must be integer")
 				}
 				cStart, err := startNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				endNode, err := parseExprWithFunctions(endExprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid end expression in For loop: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid end expression in For loop: %v", err))
 				}
 				endDt, err := endNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if endDt != TypeInt {
-					return nil, fmt.Errorf("type error on line %d: For loop end expression must be integer", lineNum)
+					return nil, vbxError(lineNum, line, "For loop end expression must be integer")
 				}
 				cEnd, err := endNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if strings.Contains(cStart, "vbx_") || strings.Contains(cEnd, "vbx_") {
@@ -1568,15 +1643,15 @@ func Transpile(vbxPath string) (string, error) {
 
 				localEnv[varName] = TypeInt
 				stmts = append(stmts, fmt.Sprintf("%sfor (long long %s = %s; %s <= %s; %s++) {", indent, varName, cStart, varName, cEnd, varName))
-				blockStack = append(blockStack, blockInfo{kind: blockFor, forVar: varName})
+				blockStack = append(blockStack, blockInfo{kind: blockFor, forVar: varName, lineNum: lineNum, source: line})
 			} else if matches := nextRegex.FindStringSubmatch(line); matches != nil {
 				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockFor {
-					return nil, fmt.Errorf("syntax error on line %d: Next without matching For", lineNum)
+					return nil, vbxError(lineNum, line, "Next without matching For")
 				}
 				topBlock := blockStack[len(blockStack)-1]
 				if len(matches) > 1 && matches[1] != "" {
 					if matches[1] != topBlock.forVar {
-						return nil, fmt.Errorf("syntax error on line %d: Next variable %s does not match For variable %s", lineNum, matches[1], topBlock.forVar)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("Next variable %s does not match For variable %s", matches[1], topBlock.forVar))
 					}
 				}
 				blockStack = blockStack[:len(blockStack)-1]
@@ -1591,7 +1666,7 @@ func Transpile(vbxPath string) (string, error) {
 					}
 				}
 				if !inFor {
-					return nil, fmt.Errorf("syntax error on line %d: Exit For outside of For loop", lineNum)
+					return nil, vbxError(lineNum, line, "Exit For outside of For loop")
 				}
 				stmts = append(stmts, fmt.Sprintf("%sbreak;", indent))
 			} else if exitWhileRegex.MatchString(line) {
@@ -1603,7 +1678,7 @@ func Transpile(vbxPath string) (string, error) {
 					}
 				}
 				if !inWhile {
-					return nil, fmt.Errorf("syntax error on line %d: Exit While outside of While loop", lineNum)
+					return nil, vbxError(lineNum, line, "Exit While outside of While loop")
 				}
 				stmts = append(stmts, fmt.Sprintf("%sbreak;", indent))
 			} else if matches := returnRegex.FindStringSubmatch(line); len(matches) > 0 {
@@ -1614,27 +1689,27 @@ func Transpile(vbxPath string) (string, error) {
 
 				if isSub {
 					if retExprStr != "" {
-						return nil, fmt.Errorf("syntax error on line %d: Subroutine cannot return a value", lineNum)
+						return nil, vbxError(lineNum, line, "Subroutine cannot return a value")
 					}
 					stmts = append(stmts, fmt.Sprintf("%sreturn;", indent))
 				} else if isFunc {
 					if retExprStr == "" {
-						return nil, fmt.Errorf("syntax error on line %d: Function Return requires an expression", lineNum)
+						return nil, vbxError(lineNum, line, "Function Return requires an expression")
 					}
 					retNode, err := parseExprWithFunctions(retExprStr, knownFunctions)
 					if err != nil {
-						return nil, fmt.Errorf("syntax error on line %d: invalid expression in Return: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in Return: %v", err))
 					}
 					_, err = retNode.ExprType(localEnv)
 					if err != nil {
-						return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 					}
 					if err := validateCalls(retNode); err != nil {
-						return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 					}
 					cRet, err := retNode.ToC(localEnv)
 					if err != nil {
-						return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 					}
 					if strings.Contains(cRet, "vbx_concat") || strings.Contains(cRet, "vbx_") {
 						needsConcatHelper = true
@@ -1650,32 +1725,32 @@ func Transpile(vbxPath string) (string, error) {
 					}
 					stmts = append(stmts, fmt.Sprintf("%sreturn %s;", indent, cRet))
 				} else {
-					return nil, fmt.Errorf("syntax error on line %d: Return statement outside of Sub or Function", lineNum)
+					return nil, vbxError(lineNum, line, "Return statement outside of Sub or Function")
 				}
 			} else if matches := constRegex.FindStringSubmatch(line); len(matches) > 2 {
 				constName := matches[1]
 				exprStr := matches[2]
 
 				if _, exists := localEnv[constName]; exists {
-					return nil, fmt.Errorf("syntax error on line %d: constant or variable %q already declared", lineNum, constName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("constant or variable %q already declared", constName))
 				}
 
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid expression in Const %s: %w", lineNum, constName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in Const %s: %v", constName, err))
 				}
 
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if strings.Contains(cExpr, "vbx_concat") || strings.Contains(cExpr, "vbx_") {
@@ -1703,7 +1778,7 @@ func Transpile(vbxPath string) (string, error) {
 				sizeStr := matches[2]
 
 				if _, exists := localEnv[arrName]; exists {
-					return nil, fmt.Errorf("syntax error on line %d: variable or array %q already declared", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("variable or array %q already declared", arrName))
 				}
 
 				elemType := TypeInt
@@ -1727,7 +1802,7 @@ func Transpile(vbxPath string) (string, error) {
 				sizeStr := matches[2]
 
 				if _, exists := localEnv[arrName]; exists {
-					return nil, fmt.Errorf("syntax error on line %d: variable or array %q already declared", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("variable or array %q already declared", arrName))
 				}
 
 				elemType := TypeInt
@@ -1751,25 +1826,25 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[2]
 
 				if _, exists := localEnv[varName]; exists {
-					return nil, fmt.Errorf("syntax error on line %d: variable %q already declared", lineNum, varName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("variable %q already declared", varName))
 				}
 
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid expression in Dim %s: %w", lineNum, varName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in Dim %s: %v", varName, err))
 				}
 
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if strings.Contains(cExpr, "vbx_concat") || strings.Contains(cExpr, "vbx_") {
@@ -1791,27 +1866,27 @@ func Transpile(vbxPath string) (string, error) {
 				rawArgs := matches[1]
 				args, err := parseMsgBoxArgs(rawArgs)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid MsgBox statement: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid MsgBox statement: %v", err))
 				}
 
 				msgNode, err := parseExprWithFunctions(args[0], knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid message expression in MsgBox: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid message expression in MsgBox: %v", err))
 				}
 				msgC, err := formatStringArg(msgNode, localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: invalid message argument for MsgBox: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid message argument for MsgBox: %v", err))
 				}
 
 				titleC := "NULL"
 				if len(args) == 2 {
 					titleNode, err := parseExprWithFunctions(args[1], knownFunctions)
 					if err != nil {
-						return nil, fmt.Errorf("syntax error on line %d: invalid title expression in MsgBox: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("invalid title expression in MsgBox: %v", err))
 					}
 					titleC, err = formatStringArg(titleNode, localEnv)
 					if err != nil {
-						return nil, fmt.Errorf("type error on line %d: invalid title argument for MsgBox: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("invalid title argument for MsgBox: %v", err))
 					}
 				}
 
@@ -1835,25 +1910,25 @@ func Transpile(vbxPath string) (string, error) {
 				rawArgs := matches[1]
 				args, err := parseMsgBoxArgs(rawArgs)
 				if err != nil || len(args) != 2 {
-					return nil, fmt.Errorf("syntax error on line %d: File.Write requires 2 arguments (path, content)", lineNum)
+					return nil, vbxError(lineNum, line, "File.Write requires 2 arguments (path, content)")
 				}
 
 				pathNode, err := parseExprWithFunctions(args[0], knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid path expression in File.Write: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid path expression in File.Write: %v", err))
 				}
 				pathC, err := formatStringArg(pathNode, localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: invalid path argument for File.Write: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid path argument for File.Write: %v", err))
 				}
 
 				contentNode, err := parseExprWithFunctions(args[1], knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid content expression in File.Write: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid content expression in File.Write: %v", err))
 				}
 				contentC, err := formatStringArg(contentNode, localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: invalid content argument for File.Write: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid content argument for File.Write: %v", err))
 				}
 
 				if strings.Contains(pathC, "vbx_concat") || strings.Contains(pathC, "vbx_") || strings.Contains(contentC, "vbx_concat") || strings.Contains(contentC, "vbx_") {
@@ -1882,18 +1957,18 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[1]
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if strings.Contains(cExpr, "vbx_concat") || strings.Contains(cExpr, "vbx_") {
 					needsConcatHelper = true
@@ -1922,18 +1997,18 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[1]
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				if strings.Contains(cExpr, "vbx_concat") || strings.Contains(cExpr, "vbx_") {
 					needsConcatHelper = true
@@ -1964,50 +2039,50 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[3]
 
 				if constSet[arrName] {
-					return nil, fmt.Errorf("syntax error on line %d: cannot re-assign value to constant %q", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("cannot re-assign value to constant %q", arrName))
 				}
 
 				arrType, exists := localEnv[arrName]
 				if !exists {
-					return nil, fmt.Errorf("syntax error on line %d: undefined array variable %q", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("undefined array variable %q", arrName))
 				}
 
 				idxNode, err := parseExprWithFunctions(idxStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid array index expression in assignment to %s: %w", lineNum, arrName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid array index expression in assignment to %s: %v", arrName, err))
 				}
 				idxType, err := idxNode.ExprType(localEnv)
 				if err != nil || idxType != TypeInt {
-					return nil, fmt.Errorf("type error on line %d: array index for %s must be integer", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("array index for %s must be integer", arrName))
 				}
 				cIdx, err := idxNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid expression in assignment to %s: %w", lineNum, arrName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in assignment to %s: %v", arrName, err))
 				}
 
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if dt != arrType {
 					if arrType == TypeDouble && dt == TypeInt {
 						// ok
 					} else {
-						return nil, fmt.Errorf("type error on line %d: cannot assign %s to %s array element %s", lineNum, dt, arrType, arrName)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("cannot assign %s to %s array element %s", dt, arrType, arrName))
 					}
 				}
 
@@ -2031,50 +2106,50 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[3]
 
 				if constSet[arrName] {
-					return nil, fmt.Errorf("syntax error on line %d: cannot re-assign value to constant %q", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("cannot re-assign value to constant %q", arrName))
 				}
 
 				arrType, exists := localEnv[arrName]
 				if !exists {
-					return nil, fmt.Errorf("syntax error on line %d: undefined array variable %q", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("undefined array variable %q", arrName))
 				}
 
 				idxNode, err := parseExprWithFunctions(idxStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid array index expression in assignment to %s: %w", lineNum, arrName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid array index expression in assignment to %s: %v", arrName, err))
 				}
 				idxType, err := idxNode.ExprType(localEnv)
 				if err != nil || idxType != TypeInt {
-					return nil, fmt.Errorf("type error on line %d: array index for %s must be integer", lineNum, arrName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("array index for %s must be integer", arrName))
 				}
 				cIdx, err := idxNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid expression in assignment to %s: %w", lineNum, arrName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in assignment to %s: %v", arrName, err))
 				}
 
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if dt != arrType {
 					if arrType == TypeDouble && dt == TypeInt {
 						// ok
 					} else {
-						return nil, fmt.Errorf("type error on line %d: cannot assign %s to %s array element %s", lineNum, dt, arrType, arrName)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("cannot assign %s to %s array element %s", dt, arrType, arrName))
 					}
 				}
 
@@ -2097,41 +2172,41 @@ func Transpile(vbxPath string) (string, error) {
 				exprStr := matches[2]
 
 				if constSet[varName] {
-					return nil, fmt.Errorf("syntax error on line %d: cannot re-assign value to constant %q", lineNum, varName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("cannot re-assign value to constant %q", varName))
 				}
 
 				if arrayMap[varName] != "" {
-					return nil, fmt.Errorf("syntax error on line %d: cannot assign directly to array variable %q", lineNum, varName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("cannot assign directly to array variable %q", varName))
 				}
 
 				varType, exists := localEnv[varName]
 				if !exists {
-					return nil, fmt.Errorf("syntax error on line %d: undefined variable %q", lineNum, varName)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("undefined variable %q", varName))
 				}
 
 				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d: invalid expression in assignment to %s: %w", lineNum, varName, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in assignment to %s: %v", varName, err))
 				}
 
 				dt, err := exprNode.ExprType(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if err := validateCalls(exprNode); err != nil {
-					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 				cExpr, err := exprNode.ToC(localEnv)
 				if err != nil {
-					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 				}
 
 				if dt != varType {
 					if varType == TypeDouble && dt == TypeInt {
 						// ok to assign int to double
 					} else if varType != dt {
-						return nil, fmt.Errorf("type error on line %d: cannot assign %s to %s variable %s", lineNum, dt, varType, varName)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("cannot assign %s to %s variable %s", dt, varType, varName))
 					}
 				}
 
@@ -2155,20 +2230,20 @@ func Transpile(vbxPath string) (string, error) {
 				rawArgs := matches[2]
 				args, err := splitCommaArgs(rawArgs)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d in argument list: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("in argument list: %v", err))
 				}
 				if len(args) != len(targetFn.Params) {
-					return nil, fmt.Errorf("type error on line %d: %s expected %d arguments, got %d", lineNum, fnName, len(targetFn.Params), len(args))
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%s expected %d arguments, got %d", fnName, len(targetFn.Params), len(args)))
 				}
 				var cArgs []string
 				for _, argStr := range args {
 					argNode, err := parseExprWithFunctions(argStr, knownFunctions)
 					if err != nil {
-						return nil, fmt.Errorf("syntax error on line %d in argument: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("in argument: %v", err))
 					}
 					cArg, err := argNode.ToC(localEnv)
 					if err != nil {
-						return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 					}
 					if strings.Contains(cArg, "vbx_concat") || strings.Contains(cArg, "vbx_") {
 						needsConcatHelper = true
@@ -2188,20 +2263,20 @@ func Transpile(vbxPath string) (string, error) {
 				rawArgs := matches[2]
 				args, err := splitCommaArgs(rawArgs)
 				if err != nil {
-					return nil, fmt.Errorf("syntax error on line %d in argument list: %w", lineNum, err)
+					return nil, vbxError(lineNum, line, fmt.Sprintf("in argument list: %v", err))
 				}
 				if len(args) != len(targetFn.Params) {
-					return nil, fmt.Errorf("type error on line %d: %s expected %d arguments, got %d", lineNum, fnName, len(targetFn.Params), len(args))
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%s expected %d arguments, got %d", fnName, len(targetFn.Params), len(args)))
 				}
 				var cArgs []string
 				for _, argStr := range args {
 					argNode, err := parseExprWithFunctions(argStr, knownFunctions)
 					if err != nil {
-						return nil, fmt.Errorf("syntax error on line %d in argument: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("in argument: %v", err))
 					}
 					cArg, err := argNode.ToC(localEnv)
 					if err != nil {
-						return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
 					}
 					if strings.Contains(cArg, "vbx_concat") || strings.Contains(cArg, "vbx_") {
 						needsConcatHelper = true
@@ -2216,7 +2291,7 @@ func Transpile(vbxPath string) (string, error) {
 				}
 				stmts = append(stmts, fmt.Sprintf("%s%s(%s);", indent, fnName, strings.Join(cArgs, ", ")))
 			} else {
-				return nil, fmt.Errorf("syntax error on line %d: unsupported line %q", lineNum, line)
+				return nil, vbxError(lineNum, line, fmt.Sprintf("unsupported line %q", line))
 			}
 		}
 
@@ -2224,13 +2299,13 @@ func Transpile(vbxPath string) (string, error) {
 			topBlock := blockStack[len(blockStack)-1]
 			switch topBlock.kind {
 			case blockWhile:
-				return nil, fmt.Errorf("syntax error: unclosed While block")
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed While block")
 			case blockIf, blockElseIf, blockElse:
-				return nil, fmt.Errorf("syntax error: unclosed If block")
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed If block")
 			case blockFor:
-				return nil, fmt.Errorf("syntax error: unclosed For block")
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed For block")
 			default:
-				return nil, fmt.Errorf("syntax error: unclosed control flow block at end of block")
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed control flow block")
 			}
 		}
 
@@ -2294,7 +2369,7 @@ func Transpile(vbxPath string) (string, error) {
 		needsValHelper = true
 		needsStdlib = true
 	}
-	if strings.Contains(fullBodyCode, "vbx_ucase") || strings.Contains(fullBodyCode, "vbx_lcase") || strings.Contains(fullBodyCode, "vbx_left") || strings.Contains(fullBodyCode, "vbx_right") || strings.Contains(fullBodyCode, "vbx_mid") {
+	if strings.Contains(fullBodyCode, "vbx_ucase") || strings.Contains(fullBodyCode, "vbx_lcase") || strings.Contains(fullBodyCode, "vbx_left") || strings.Contains(fullBodyCode, "vbx_right") || strings.Contains(fullBodyCode, "vbx_mid") || strings.Contains(fullBodyCode, "vbx_trim") || strings.Contains(fullBodyCode, "vbx_replace") {
 		needsStringHelpers = true
 		needsCtype = true
 		needsString = true
@@ -2322,6 +2397,23 @@ func Transpile(vbxPath string) (string, error) {
 	}
 	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsCtype || needsStringHelpers || needsValHelper {
 		sb.WriteString("\n")
+	}
+
+
+
+	if needsConcatHelper || needsStringHelpers {
+		sb.WriteString("#define VBX_STR_POOL_SIZE 256\n")
+		sb.WriteString("#define VBX_STR_BUF_SIZE  4096\n")
+		sb.WriteString("static char vbx_str_pool[VBX_STR_POOL_SIZE][VBX_STR_BUF_SIZE];\n")
+		sb.WriteString("static int  vbx_str_pool_idx = 0;\n\n")
+		sb.WriteString("static char* vbx_alloc_str(size_t size) {\n")
+		sb.WriteString("    if (size >= VBX_STR_BUF_SIZE) {\n")
+		sb.WriteString("        return (char*)malloc(size + 1);\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    char* buf = vbx_str_pool[vbx_str_pool_idx];\n")
+		sb.WriteString("    vbx_str_pool_idx = (vbx_str_pool_idx + 1) % VBX_STR_POOL_SIZE;\n")
+		sb.WriteString("    return buf;\n")
+		sb.WriteString("}\n\n")
 	}
 
 	if needsMsgBox {
@@ -2469,20 +2561,20 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("static char* vbx_concat(const char* s1, const char* s2) {\n")
 		sb.WriteString("    size_t len1 = strlen(s1);\n")
 		sb.WriteString("    size_t len2 = strlen(s2);\n")
-		sb.WriteString("    char* result = (char*)malloc(len1 + len2 + 1);\n")
+		sb.WriteString("    char* result = vbx_alloc_str(len1 + len2 + 1);\n")
 		sb.WriteString("    if (!result) return \"\";\n")
 		sb.WriteString("    memcpy(result, s1, len1);\n")
 		sb.WriteString("    memcpy(result + len1, s2, len2 + 1);\n")
 		sb.WriteString("    return result;\n")
 		sb.WriteString("}\n\n")
 		sb.WriteString("static char* vbx_int_to_str(long long n) {\n")
-		sb.WriteString("    char* buf = (char*)malloc(32);\n")
+		sb.WriteString("    char* buf = vbx_alloc_str(32);\n")
 		sb.WriteString("    if (!buf) return \"\";\n")
 		sb.WriteString("    snprintf(buf, 32, \"%lld\", n);\n")
 		sb.WriteString("    return buf;\n")
 		sb.WriteString("}\n\n")
 		sb.WriteString("static char* vbx_double_to_str(double d) {\n")
-		sb.WriteString("    char* buf = (char*)malloc(64);\n")
+		sb.WriteString("    char* buf = vbx_alloc_str(64);\n")
 		sb.WriteString("    if (!buf) return \"\";\n")
 		sb.WriteString("    snprintf(buf, 64, \"%f\", d);\n")
 		sb.WriteString("    return buf;\n")
@@ -2493,7 +2585,7 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("static char* vbx_ucase(const char* s) {\n")
 		sb.WriteString("    if (!s) return \"\";\n")
 		sb.WriteString("    size_t len = strlen(s);\n")
-		sb.WriteString("    char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(len + 1);\n")
 		sb.WriteString("    if (!res) return \"\";\n")
 		sb.WriteString("    for (size_t i = 0; i < len; i++) {\n")
 		sb.WriteString("        res[i] = (char)toupper((unsigned char)s[i]);\n")
@@ -2505,7 +2597,7 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("static char* vbx_lcase(const char* s) {\n")
 		sb.WriteString("    if (!s) return \"\";\n")
 		sb.WriteString("    size_t len = strlen(s);\n")
-		sb.WriteString("    char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(len + 1);\n")
 		sb.WriteString("    if (!res) return \"\";\n")
 		sb.WriteString("    for (size_t i = 0; i < len; i++) {\n")
 		sb.WriteString("        res[i] = (char)tolower((unsigned char)s[i]);\n")
@@ -2516,14 +2608,14 @@ func Transpile(vbxPath string) (string, error) {
 
 		sb.WriteString("static char* vbx_left(const char* s, long long n) {\n")
 		sb.WriteString("    if (!s || n <= 0) {\n")
-		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        char* res = vbx_alloc_str(1);\n")
 		sb.WriteString("        if (res) res[0] = '\\0';\n")
 		sb.WriteString("        return res ? res : \"\";\n")
 		sb.WriteString("    }\n")
 		sb.WriteString("    size_t len = strlen(s);\n")
 		sb.WriteString("    size_t count = (size_t)n;\n")
 		sb.WriteString("    if (count > len) count = len;\n")
-		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(count + 1);\n")
 		sb.WriteString("    if (!res) return \"\";\n")
 		sb.WriteString("    memcpy(res, s, count);\n")
 		sb.WriteString("    res[count] = '\\0';\n")
@@ -2532,14 +2624,14 @@ func Transpile(vbxPath string) (string, error) {
 
 		sb.WriteString("static char* vbx_right(const char* s, long long n) {\n")
 		sb.WriteString("    if (!s || n <= 0) {\n")
-		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        char* res = vbx_alloc_str(1);\n")
 		sb.WriteString("        if (res) res[0] = '\\0';\n")
 		sb.WriteString("        return res ? res : \"\";\n")
 		sb.WriteString("    }\n")
 		sb.WriteString("    size_t len = strlen(s);\n")
 		sb.WriteString("    size_t count = (size_t)n;\n")
 		sb.WriteString("    if (count > len) count = len;\n")
-		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(count + 1);\n")
 		sb.WriteString("    if (!res) return \"\";\n")
 		sb.WriteString("    memcpy(res, s + (len - count), count);\n")
 		sb.WriteString("    res[count] = '\\0';\n")
@@ -2548,23 +2640,82 @@ func Transpile(vbxPath string) (string, error) {
 
 		sb.WriteString("static char* vbx_mid(const char* s, long long start, long long length) {\n")
 		sb.WriteString("    if (!s || start < 1 || length <= 0) {\n")
-		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        char* res = vbx_alloc_str(1);\n")
 		sb.WriteString("        if (res) res[0] = '\\0';\n")
 		sb.WriteString("        return res ? res : \"\";\n")
 		sb.WriteString("    }\n")
 		sb.WriteString("    size_t len = strlen(s);\n")
 		sb.WriteString("    size_t idx = (size_t)(start - 1);\n")
 		sb.WriteString("    if (idx >= len) {\n")
-		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        char* res = vbx_alloc_str(1);\n")
 		sb.WriteString("        if (res) res[0] = '\\0';\n")
 		sb.WriteString("        return res ? res : \"\";\n")
 		sb.WriteString("    }\n")
 		sb.WriteString("    size_t count = (size_t)length;\n")
 		sb.WriteString("    if (idx + count > len) count = len - idx;\n")
-		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(count + 1);\n")
 		sb.WriteString("    if (!res) return \"\";\n")
 		sb.WriteString("    memcpy(res, s + idx, count);\n")
 		sb.WriteString("    res[count] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_trim(const char* s) {\n")
+		sb.WriteString("    if (!s) return \"\";\n")
+		sb.WriteString("    size_t start = 0;\n")
+		sb.WriteString("    while (s[start] && isspace((unsigned char)s[start])) {\n")
+		sb.WriteString("        start++;\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    if (start >= len) {\n")
+		sb.WriteString("        char* res = vbx_alloc_str(1);\n")
+		sb.WriteString("        if (res) res[0] = '\\0';\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t end = len - 1;\n")
+		sb.WriteString("    while (end > start && isspace((unsigned char)s[end])) {\n")
+		sb.WriteString("        end--;\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t count = end - start + 1;\n")
+		sb.WriteString("    char* res = vbx_alloc_str(count + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    memcpy(res, s + start, count);\n")
+		sb.WriteString("    res[count] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_replace(const char* s, const char* find, const char* replace_with) {\n")
+		sb.WriteString("    if (!s) return \"\";\n")
+		sb.WriteString("    if (!find || strlen(find) == 0) {\n")
+		sb.WriteString("        size_t len = strlen(s);\n")
+		sb.WriteString("        char* res = vbx_alloc_str(len + 1);\n")
+		sb.WriteString("        if (!res) return \"\";\n")
+		sb.WriteString("        strcpy(res, s);\n")
+		sb.WriteString("        return res;\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    if (!replace_with) replace_with = \"\";\n")
+		sb.WriteString("    size_t find_len = strlen(find);\n")
+		sb.WriteString("    size_t rep_len = strlen(replace_with);\n")
+		sb.WriteString("    size_t count = 0;\n")
+		sb.WriteString("    const char* tmp = s;\n")
+		sb.WriteString("    while ((tmp = strstr(tmp, find)) != NULL) {\n")
+		sb.WriteString("        count++;\n")
+		sb.WriteString("        tmp += find_len;\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t new_len = strlen(s) + count * (rep_len - find_len);\n")
+		sb.WriteString("    char* res = vbx_alloc_str(new_len + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    char* dst = res;\n")
+		sb.WriteString("    while (*s) {\n")
+		sb.WriteString("        if (strstr(s, find) == s) {\n")
+		sb.WriteString("            strcpy(dst, replace_with);\n")
+		sb.WriteString("            dst += rep_len;\n")
+		sb.WriteString("            s += find_len;\n")
+		sb.WriteString("        } else {\n")
+		sb.WriteString("            *dst++ = *s++;\n")
+		sb.WriteString("        }\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    *dst = '\\0';\n")
 		sb.WriteString("    return res;\n")
 		sb.WriteString("}\n\n")
 	}
