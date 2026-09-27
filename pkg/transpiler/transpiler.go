@@ -101,6 +101,9 @@ type CallNode struct {
 }
 
 func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
+	if c.Name == "InputBox" || c.Name == "File.Read" {
+		return TypeString, nil
+	}
 	t, ok := env[c.Name]
 	if !ok {
 		return TypeUnknown, fmt.Errorf("undefined variable or function: %s", c.Name)
@@ -112,6 +115,33 @@ func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
 }
 
 func (c *CallNode) ToC(env map[string]DataType) (string, error) {
+	if c.Name == "InputBox" {
+		if len(c.Args) < 1 || len(c.Args) > 2 {
+			return "", fmt.Errorf("InputBox requires 1 or 2 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		if len(c.Args) == 1 {
+			return fmt.Sprintf("vbx_inputbox(%s, NULL)", arg0C), nil
+		}
+		arg1C, err := formatStringArg(c.Args[1], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_inputbox(%s, %s)", arg0C, arg1C), nil
+	}
+	if c.Name == "File.Read" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("File.Read requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_file_read(%s)", arg0C), nil
+	}
 	t, ok := env[c.Name]
 	if !ok {
 		return "", fmt.Errorf("undefined function: %s", c.Name)
@@ -350,7 +380,7 @@ func tokenizeExpr(input string) ([]Token, error) {
 
 		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' {
 			start := i
-			for i < n && ((input[i] >= 'a' && input[i] <= 'z') || (input[i] >= 'A' && input[i] <= 'Z') || (input[i] >= '0' && input[i] <= '9') || input[i] == '_') {
+			for i < n && ((input[i] >= 'a' && input[i] <= 'z') || (input[i] >= 'A' && input[i] <= 'Z') || (input[i] >= '0' && input[i] <= '9') || input[i] == '_' || input[i] == '.') {
 				i++
 			}
 			ident := input[start:i]
@@ -757,6 +787,7 @@ func Transpile(vbxPath string) (string, error) {
 	forRegex := regexp.MustCompile("(?i)^\\s*For\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)\\s+To\\s+(.+)\\s*$")
 	nextRegex := regexp.MustCompile("(?i)^\\s*Next(?:\\s+([a-zA-Z_][a-zA-Z0-9_]*))?\\s*$")
 	msgboxRegex := regexp.MustCompile("(?i)^\\s*MsgBox\\b(.*)$")
+	fileWriteRegex := regexp.MustCompile("(?i)^\\s*File\\.Write\\b(.*)$")
 	printQuoteRegex := regexp.MustCompile("(?i)^\\s*Print\\s+\"(.*)\"\\s*$")
 	printParenQuoteRegex := regexp.MustCompile("(?i)^\\s*Print\\s*\\(\\s*\"(.*)\"\\s*\\)\\s*$")
 	printExprRegex := regexp.MustCompile("(?i)^\\s*Print\\s+(.+)$")
@@ -871,6 +902,8 @@ func Transpile(vbxPath string) (string, error) {
 	}
 
 	globalEnv := make(map[string]DataType)
+	globalEnv["InputBox"] = TypeString
+	globalEnv["File.Read"] = TypeString
 	for _, fn := range functions {
 		globalEnv[fn.Name] = fn.ReturnType
 	}
@@ -984,6 +1017,9 @@ func Transpile(vbxPath string) (string, error) {
 	needsString := false
 	needsConcatHelper := false
 	needsMsgBox := false
+	needsInputBox := false
+	needsFileRead := false
+	needsFileWrite := false
 
 	transpileBlock := func(bodyLines []LineInfo, localEnv map[string]DataType, isSub bool, isFunc bool) ([]string, error) {
 		var stmts []string
@@ -992,6 +1028,20 @@ func Transpile(vbxPath string) (string, error) {
 		var validateCalls func(n ExprNode) error
 		validateCalls = func(n ExprNode) error {
 			if call, ok := n.(*CallNode); ok {
+				if call.Name == "InputBox" || call.Name == "File.Read" {
+					if call.Name == "File.Read" && len(call.Args) != 1 {
+						return fmt.Errorf("type error: File.Read expected 1 argument, got %d", len(call.Args))
+					}
+					if call.Name == "InputBox" && (len(call.Args) < 1 || len(call.Args) > 2) {
+						return fmt.Errorf("type error: InputBox expected 1 or 2 arguments, got %d", len(call.Args))
+					}
+					for _, arg := range call.Args {
+						if err := validateCalls(arg); err != nil {
+							return err
+						}
+					}
+					return nil
+				}
 				targetFn, exists := funcMap[call.Name]
 				if !exists {
 					return fmt.Errorf("undefined function: %s", call.Name)
@@ -1244,6 +1294,41 @@ func Transpile(vbxPath string) (string, error) {
 				needsStdlib = true
 
 				stmts = append(stmts, fmt.Sprintf("%svbx_msgbox(%s, %s);", indent, msgC, titleC))
+			} else if matches := fileWriteRegex.FindStringSubmatch(line); len(matches) > 1 {
+				rawArgs := matches[1]
+				args, err := parseMsgBoxArgs(rawArgs)
+				if err != nil || len(args) != 2 {
+					return nil, fmt.Errorf("syntax error on line %d: File.Write requires 2 arguments (path, content)", lineNum)
+				}
+
+				pathNode, err := parseExpr(args[0])
+				if err != nil {
+					return nil, fmt.Errorf("syntax error on line %d: invalid path expression in File.Write: %w", lineNum, err)
+				}
+				pathC, err := formatStringArg(pathNode, localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("type error on line %d: invalid path argument for File.Write: %w", lineNum, err)
+				}
+
+				contentNode, err := parseExpr(args[1])
+				if err != nil {
+					return nil, fmt.Errorf("syntax error on line %d: invalid content expression in File.Write: %w", lineNum, err)
+				}
+				contentC, err := formatStringArg(contentNode, localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("type error on line %d: invalid content argument for File.Write: %w", lineNum, err)
+				}
+
+				if strings.Contains(pathC, "vbx_concat") || strings.Contains(pathC, "vbx_") || strings.Contains(contentC, "vbx_concat") || strings.Contains(contentC, "vbx_") {
+					needsConcatHelper = true
+				}
+				if strings.Contains(pathC, "strcmp") || strings.Contains(contentC, "strcmp") {
+					needsString = true
+				}
+
+				needsStdio = true
+
+				stmts = append(stmts, fmt.Sprintf("%svbx_file_write(%s, %s);", indent, pathC, contentC))
 			} else if matches := printQuoteRegex.FindStringSubmatch(line); len(matches) > 1 {
 				msg := matches[1]
 				stmts = append(stmts, fmt.Sprintf("%sprintf(\"%s\\n\");", indent, msg))
@@ -1473,20 +1558,34 @@ func Transpile(vbxPath string) (string, error) {
 		return "", err
 	}
 
+	fullBodyCode := strings.Join(mainStmts, "\n")
+	for _, tFn := range transpiledFunctions {
+		fullBodyCode += "\n" + strings.Join(tFn.stmts, "\n")
+	}
+	if strings.Contains(fullBodyCode, "vbx_inputbox") {
+		needsInputBox = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_file_read") {
+		needsFileRead = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_file_write") {
+		needsFileWrite = true
+	}
+
 	var sb strings.Builder
 	if needsMsgBox {
 		sb.WriteString("#ifdef _WIN32\n#include <windows.h>\n#endif\n")
 	}
-	if needsStdio {
+	if needsStdio || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("#include <stdio.h>\n")
 	}
-	if needsStdlib || needsConcatHelper || needsMsgBox {
+	if needsStdlib || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("#include <stdlib.h>\n")
 	}
-	if needsString || needsConcatHelper || needsMsgBox {
+	if needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("#include <string.h>\n")
 	}
-	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox {
+	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("\n")
 	}
 
@@ -1517,6 +1616,111 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("    }\n")
 		sb.WriteString("}\n")
 		sb.WriteString("#endif\n\n")
+	}
+
+	if needsInputBox {
+		sb.WriteString("#ifdef _WIN32\n")
+		sb.WriteString("static char* vbx_inputbox(const char* prompt, const char* title) {\n")
+		sb.WriteString("    const char* t = title ? title : \"VBX\";\n")
+		sb.WriteString("    char cmd[2048];\n")
+		sb.WriteString("    snprintf(cmd, sizeof(cmd), \"powershell -NoProfile -Command \\\"[System.Reflection.Assembly]::LoadWithPartialName('Microsoft.VisualBasic') | Out-Null; [Microsoft.VisualBasic.Interaction]::InputBox('%s', '%s')\\\"\", prompt, t);\n")
+		sb.WriteString("    FILE* fp = _popen(cmd, \"r\");\n")
+		sb.WriteString("    if (!fp) return \"\";\n")
+		sb.WriteString("    char buf[1024];\n")
+		sb.WriteString("    if (fgets(buf, sizeof(buf), fp) != NULL) {\n")
+		sb.WriteString("        _pclose(fp);\n")
+		sb.WriteString("        size_t len = strlen(buf);\n")
+		sb.WriteString("        while (len > 0 && (buf[len-1] == '\\r' || buf[len-1] == '\\n')) { buf[--len] = '\\0'; }\n")
+		sb.WriteString("        char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("        if (res) strcpy(res, buf);\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    _pclose(fp);\n")
+		sb.WriteString("    return \"\";\n")
+		sb.WriteString("}\n")
+		sb.WriteString("#elif defined(__APPLE__)\n")
+		sb.WriteString("static char* vbx_inputbox(const char* prompt, const char* title) {\n")
+		sb.WriteString("    const char* t = title ? title : \"VBX\";\n")
+		sb.WriteString("    char cmd[2048];\n")
+		sb.WriteString("    snprintf(cmd, sizeof(cmd), \"osascript -e 'text returned of (display dialog \\\"%s\\\" with title \\\"%s\\\" default answer \\\"\\\")' 2>/dev/null\", prompt, t);\n")
+		sb.WriteString("    FILE* fp = popen(cmd, \"r\");\n")
+		sb.WriteString("    if (!fp) return \"\";\n")
+		sb.WriteString("    char buf[1024];\n")
+		sb.WriteString("    if (fgets(buf, sizeof(buf), fp) != NULL) {\n")
+		sb.WriteString("        pclose(fp);\n")
+		sb.WriteString("        size_t len = strlen(buf);\n")
+		sb.WriteString("        while (len > 0 && (buf[len-1] == '\\r' || buf[len-1] == '\\n')) { buf[--len] = '\\0'; }\n")
+		sb.WriteString("        char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("        if (res) strcpy(res, buf);\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    pclose(fp);\n")
+		sb.WriteString("    return \"\";\n")
+		sb.WriteString("}\n")
+		sb.WriteString("#else\n")
+		sb.WriteString("static char* vbx_inputbox(const char* prompt, const char* title) {\n")
+		sb.WriteString("    const char* t = title ? title : \"VBX\";\n")
+		sb.WriteString("    char cmd[2048];\n")
+		sb.WriteString("    snprintf(cmd, sizeof(cmd), \"zenity --entry --title=\\\"%s\\\" --text=\\\"%s\\\" 2>/dev/null\", t, prompt);\n")
+		sb.WriteString("    FILE* fp = popen(cmd, \"r\");\n")
+		sb.WriteString("    char buf[1024] = {0};\n")
+		sb.WriteString("    if (fp) {\n")
+		sb.WriteString("        if (fgets(buf, sizeof(buf), fp) != NULL) {\n")
+		sb.WriteString("            int status = pclose(fp);\n")
+		sb.WriteString("            if (status == 0) {\n")
+		sb.WriteString("                size_t len = strlen(buf);\n")
+		sb.WriteString("                while (len > 0 && (buf[len-1] == '\\r' || buf[len-1] == '\\n')) { buf[--len] = '\\0'; }\n")
+		sb.WriteString("                char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("                if (res) strcpy(res, buf);\n")
+		sb.WriteString("                return res ? res : \"\";\n")
+		sb.WriteString("            }\n")
+		sb.WriteString("        } else {\n")
+		sb.WriteString("            pclose(fp);\n")
+		sb.WriteString("        }\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    printf(\"%s: \", prompt);\n")
+		sb.WriteString("    if (fgets(buf, sizeof(buf), stdin) != NULL) {\n")
+		sb.WriteString("        size_t len = strlen(buf);\n")
+		sb.WriteString("        while (len > 0 && (buf[len-1] == '\\r' || buf[len-1] == '\\n')) { buf[--len] = '\\0'; }\n")
+		sb.WriteString("        char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("        if (res) strcpy(res, buf);\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    return \"\";\n")
+		sb.WriteString("}\n")
+		sb.WriteString("#endif\n\n")
+	}
+
+	if needsFileWrite {
+		sb.WriteString("static void vbx_file_write(const char* filepath, const char* content) {\n")
+		sb.WriteString("    FILE* f = fopen(filepath, \"w\");\n")
+		sb.WriteString("    if (!f) return;\n")
+		sb.WriteString("    fputs(content ? content : \"\", f);\n")
+		sb.WriteString("    fclose(f);\n")
+		sb.WriteString("}\n\n")
+	}
+
+	if needsFileRead {
+		sb.WriteString("static char* vbx_file_read(const char* filepath) {\n")
+		sb.WriteString("    FILE* f = fopen(filepath, \"rb\");\n")
+		sb.WriteString("    if (!f) return \"\";\n")
+		sb.WriteString("    fseek(f, 0, SEEK_END);\n")
+		sb.WriteString("    long len = ftell(f);\n")
+		sb.WriteString("    if (len < 0) {\n")
+		sb.WriteString("        fclose(f);\n")
+		sb.WriteString("        return \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    fseek(f, 0, SEEK_SET);\n")
+		sb.WriteString("    char* buf = (char*)malloc(len + 1);\n")
+		sb.WriteString("    if (!buf) {\n")
+		sb.WriteString("        fclose(f);\n")
+		sb.WriteString("        return \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t read_bytes = fread(buf, 1, len, f);\n")
+		sb.WriteString("    buf[read_bytes] = '\\0';\n")
+		sb.WriteString("    fclose(f);\n")
+		sb.WriteString("    return buf;\n")
+		sb.WriteString("}\n\n")
 	}
 
 	if needsConcatHelper {
