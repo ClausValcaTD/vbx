@@ -82,6 +82,15 @@ type BinaryNode struct {
 	Right ExprNode
 }
 
+func isComparisonOp(op string) bool {
+	switch op {
+	case "==", "=", "!=", "<>", "<", "<=", ">", ">=":
+		return true
+	default:
+		return false
+	}
+}
+
 func (b *BinaryNode) ExprType(env map[string]DataType) (DataType, error) {
 	lt, err := b.Left.ExprType(env)
 	if err != nil {
@@ -90,6 +99,23 @@ func (b *BinaryNode) ExprType(env map[string]DataType) (DataType, error) {
 	rt, err := b.Right.ExprType(env)
 	if err != nil {
 		return TypeUnknown, err
+	}
+
+	if isComparisonOp(b.Op) {
+		if lt == TypeString && rt == TypeString {
+			return TypeInt, nil
+		}
+		if (lt == TypeInt || lt == TypeDouble) && (rt == TypeInt || rt == TypeDouble) {
+			return TypeInt, nil
+		}
+		return TypeUnknown, fmt.Errorf("incompatible types for comparison %s: %s and %s", b.Op, lt, rt)
+	}
+
+	if b.Op == "%" {
+		if lt == TypeInt && rt == TypeInt {
+			return TypeInt, nil
+		}
+		return TypeUnknown, fmt.Errorf("incompatible types for modulo operator %%: %s and %s", lt, rt)
 	}
 
 	if b.Op == "+" {
@@ -108,6 +134,53 @@ func (b *BinaryNode) ExprType(env map[string]DataType) (DataType, error) {
 }
 
 func (b *BinaryNode) ToC(env map[string]DataType) (string, error) {
+	lt, err := b.Left.ExprType(env)
+	if err != nil {
+		return "", err
+	}
+	rt, err := b.Right.ExprType(env)
+	if err != nil {
+		return "", err
+	}
+
+	if isComparisonOp(b.Op) {
+		if lt == TypeString || rt == TypeString {
+			leftC, err := formatStringArg(b.Left, env)
+			if err != nil {
+				return "", err
+			}
+			rightC, err := formatStringArg(b.Right, env)
+			if err != nil {
+				return "", err
+			}
+			cOp := b.Op
+			switch b.Op {
+			case "=":
+				cOp = "=="
+			case "<>":
+				cOp = "!="
+			}
+			return fmt.Sprintf("(strcmp(%s, %s) %s 0)", leftC, rightC, cOp), nil
+		}
+
+		leftC, err := b.Left.ToC(env)
+		if err != nil {
+			return "", err
+		}
+		rightC, err := b.Right.ToC(env)
+		if err != nil {
+			return "", err
+		}
+		cOp := b.Op
+		switch b.Op {
+		case "=":
+			cOp = "=="
+		case "<>":
+			cOp = "!="
+		}
+		return fmt.Sprintf("(%s %s %s)", leftC, cOp, rightC), nil
+	}
+
 	targetType, err := b.ExprType(env)
 	if err != nil {
 		return "", err
@@ -227,11 +300,62 @@ func tokenizeExpr(input string) ([]Token, error) {
 			for i < n && ((input[i] >= 'a' && input[i] <= 'z') || (input[i] >= 'A' && input[i] <= 'Z') || (input[i] >= '0' && input[i] <= '9') || input[i] == '_') {
 				i++
 			}
-			tokens = append(tokens, Token{Type: TokIdent, Val: input[start:i]})
+			ident := input[start:i]
+			if strings.EqualFold(ident, "Mod") {
+				tokens = append(tokens, Token{Type: TokOp, Val: "%"})
+			} else {
+				tokens = append(tokens, Token{Type: TokIdent, Val: ident})
+			}
 			continue
 		}
 
-		if ch == '+' || ch == '-' || ch == '*' || ch == '/' {
+		if ch == '=' {
+			if i+1 < n && input[i+1] == '=' {
+				tokens = append(tokens, Token{Type: TokOp, Val: "=="})
+				i += 2
+			} else {
+				tokens = append(tokens, Token{Type: TokOp, Val: "="})
+				i++
+			}
+			continue
+		}
+
+		if ch == '!' {
+			if i+1 < n && input[i+1] == '=' {
+				tokens = append(tokens, Token{Type: TokOp, Val: "!="})
+				i += 2
+			} else {
+				return nil, fmt.Errorf("unexpected character '!': expected '!='")
+			}
+			continue
+		}
+
+		if ch == '<' {
+			if i+1 < n && input[i+1] == '=' {
+				tokens = append(tokens, Token{Type: TokOp, Val: "<="})
+				i += 2
+			} else if i+1 < n && input[i+1] == '>' {
+				tokens = append(tokens, Token{Type: TokOp, Val: "<>"})
+				i += 2
+			} else {
+				tokens = append(tokens, Token{Type: TokOp, Val: "<"})
+				i++
+			}
+			continue
+		}
+
+		if ch == '>' {
+			if i+1 < n && input[i+1] == '=' {
+				tokens = append(tokens, Token{Type: TokOp, Val: ">="})
+				i += 2
+			} else {
+				tokens = append(tokens, Token{Type: TokOp, Val: ">"})
+				i++
+			}
+			continue
+		}
+
+		if ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' {
 			tokens = append(tokens, Token{Type: TokOp, Val: string(ch)})
 			i++
 			continue
@@ -267,7 +391,7 @@ func parseExpr(input string) (ExprNode, error) {
 		return nil, err
 	}
 	p := &exprParser{tokens: tokens, pos: 0}
-	node, err := p.parseAddition()
+	node, err := p.parseComparison()
 	if err != nil {
 		return nil, err
 	}
@@ -275,6 +399,28 @@ func parseExpr(input string) (ExprNode, error) {
 		return nil, fmt.Errorf("unexpected token at end of expression: %s", p.tokens[p.pos].Val)
 	}
 	return node, nil
+}
+
+func (p *exprParser) parseComparison() (ExprNode, error) {
+	left, err := p.parseAddition()
+	if err != nil {
+		return nil, err
+	}
+
+	for p.pos < len(p.tokens) {
+		tok := p.tokens[p.pos]
+		if tok.Type == TokOp && isComparisonOp(tok.Val) {
+			p.pos++
+			right, err := p.parseAddition()
+			if err != nil {
+				return nil, err
+			}
+			left = &BinaryNode{Left: left, Op: tok.Val, Right: right}
+		} else {
+			break
+		}
+	}
+	return left, nil
 }
 
 func (p *exprParser) parseAddition() (ExprNode, error) {
@@ -307,7 +453,7 @@ func (p *exprParser) parseMultiplication() (ExprNode, error) {
 
 	for p.pos < len(p.tokens) {
 		tok := p.tokens[p.pos]
-		if tok.Type == TokOp && (tok.Val == "*" || tok.Val == "/") {
+		if tok.Type == TokOp && (tok.Val == "*" || tok.Val == "/" || tok.Val == "%") {
 			p.pos++
 			right, err := p.parsePrimary()
 			if err != nil {
@@ -338,7 +484,7 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 	case TokIdent:
 		return &VarNode{Name: tok.Val}, nil
 	case TokLParen:
-		expr, err := p.parseAddition()
+		expr, err := p.parseComparison()
 		if err != nil {
 			return nil, err
 		}
@@ -350,6 +496,20 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 	default:
 		return nil, fmt.Errorf("unexpected token in expression: %s", tok.Val)
 	}
+}
+
+// Transpile converts a .vbx file content into standard C code.
+type blockKind int
+
+const (
+	blockIf blockKind = iota
+	blockElse
+	blockFor
+)
+
+type blockInfo struct {
+	kind   blockKind
+	forVar string
 }
 
 // Transpile converts a .vbx file content into standard C code.
@@ -368,17 +528,25 @@ func Transpile(vbxPath string) (string, error) {
 
 	var statements []string
 	symbolTable := make(map[string]DataType)
+	var blockStack []blockInfo
 
 	needsStdio := false
 	needsStdlib := false
+	needsString := false
 	needsConcatHelper := false
 
-	dimRegex := regexp.MustCompile(`^\s*Dim\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
-	assignRegex := regexp.MustCompile(`^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
-	printQuoteRegex := regexp.MustCompile(`^\s*Print\s+"(.*)"\s*$`)
-	printParenQuoteRegex := regexp.MustCompile(`^\s*Print\s*\(\s*"(.*)"\s*\)\s*$`)
-	printExprRegex := regexp.MustCompile(`^\s*Print\s+(.+)$`)
-	printParenExprRegex := regexp.MustCompile(`^\s*Print\s*\(\s*(.+)\s*\)\s*$`)
+	dimRegex := regexp.MustCompile(`(?i)^\s*Dim\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
+	assignRegex := regexp.MustCompile(`(?i)^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
+	printQuoteRegex := regexp.MustCompile(`(?i)^\s*Print\s+"(.*)"\s*$`)
+	printParenQuoteRegex := regexp.MustCompile(`(?i)^\s*Print\s*\(\s*"(.*)"\s*\)\s*$`)
+	printExprRegex := regexp.MustCompile(`(?i)^\s*Print\s+(.+)$`)
+	printParenExprRegex := regexp.MustCompile(`(?i)^\s*Print\s*\(\s*(.+)\s*\)\s*$`)
+
+	ifRegex := regexp.MustCompile(`(?i)^\s*If\s+(.+)\s+Then\s*$`)
+	elseRegex := regexp.MustCompile(`(?i)^\s*Else\s*$`)
+	endIfRegex := regexp.MustCompile(`(?i)^\s*End\s+If\s*$`)
+	forRegex := regexp.MustCompile(`(?i)^\s*For\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)\s+To\s+(.+)\s*$`)
+	nextRegex := regexp.MustCompile(`(?i)^\s*Next(?:\s+([a-zA-Z_][a-zA-Z0-9_]*))?\s*$`)
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
@@ -390,7 +558,106 @@ func Transpile(vbxPath string) (string, error) {
 			continue
 		}
 
-		if matches := dimRegex.FindStringSubmatch(line); len(matches) > 2 {
+		indent := strings.Repeat("    ", len(blockStack)+1)
+
+		if matches := ifRegex.FindStringSubmatch(line); len(matches) > 1 {
+			condStr := matches[1]
+			condNode, err := parseExpr(condStr)
+			if err != nil {
+				return "", fmt.Errorf("syntax error on line %d: invalid condition in If statement: %w", lineNum, err)
+			}
+			_, err = condNode.ExprType(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("type error on line %d: %w", lineNum, err)
+			}
+			cCond, err := condNode.ToC(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+			}
+			if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
+				needsConcatHelper = true
+				needsStdio = true
+				needsStdlib = true
+			}
+			if strings.Contains(cCond, "strcmp") {
+				needsString = true
+			}
+			statements = append(statements, fmt.Sprintf("%sif (%s) {", indent, cCond))
+			blockStack = append(blockStack, blockInfo{kind: blockIf})
+		} else if elseRegex.MatchString(line) {
+			if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockIf {
+				return "", fmt.Errorf("syntax error on line %d: Else without matching If", lineNum)
+			}
+			blockStack[len(blockStack)-1] = blockInfo{kind: blockElse}
+			outerIndent := strings.Repeat("    ", len(blockStack))
+			statements = append(statements, fmt.Sprintf("%s} else {", outerIndent))
+		} else if endIfRegex.MatchString(line) {
+			if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElse) {
+				return "", fmt.Errorf("syntax error on line %d: End If without matching If", lineNum)
+			}
+			blockStack = blockStack[:len(blockStack)-1]
+			outerIndent := strings.Repeat("    ", len(blockStack)+1)
+			statements = append(statements, fmt.Sprintf("%s}", outerIndent))
+		} else if matches := forRegex.FindStringSubmatch(line); len(matches) > 3 {
+			varName := matches[1]
+			startExprStr := matches[2]
+			endExprStr := matches[3]
+
+			startNode, err := parseExpr(startExprStr)
+			if err != nil {
+				return "", fmt.Errorf("syntax error on line %d: invalid start expression in For loop: %w", lineNum, err)
+			}
+			startDt, err := startNode.ExprType(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("type error on line %d: %w", lineNum, err)
+			}
+			if startDt != TypeInt {
+				return "", fmt.Errorf("type error on line %d: For loop start expression must be integer", lineNum)
+			}
+			cStart, err := startNode.ToC(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+			}
+
+			endNode, err := parseExpr(endExprStr)
+			if err != nil {
+				return "", fmt.Errorf("syntax error on line %d: invalid end expression in For loop: %w", lineNum, err)
+			}
+			endDt, err := endNode.ExprType(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("type error on line %d: %w", lineNum, err)
+			}
+			if endDt != TypeInt {
+				return "", fmt.Errorf("type error on line %d: For loop end expression must be integer", lineNum)
+			}
+			cEnd, err := endNode.ToC(symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+			}
+
+			if strings.Contains(cStart, "vbx_") || strings.Contains(cEnd, "vbx_") {
+				needsConcatHelper = true
+				needsStdio = true
+				needsStdlib = true
+			}
+
+			symbolTable[varName] = TypeInt
+			statements = append(statements, fmt.Sprintf("%sfor (long long %s = %s; %s <= %s; %s++) {", indent, varName, cStart, varName, cEnd, varName))
+			blockStack = append(blockStack, blockInfo{kind: blockFor, forVar: varName})
+		} else if matches := nextRegex.FindStringSubmatch(line); matches != nil {
+			if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockFor {
+				return "", fmt.Errorf("syntax error on line %d: Next without matching For", lineNum)
+			}
+			topBlock := blockStack[len(blockStack)-1]
+			if len(matches) > 1 && matches[1] != "" {
+				if matches[1] != topBlock.forVar {
+					return "", fmt.Errorf("syntax error on line %d: Next variable %s does not match For variable %s", lineNum, matches[1], topBlock.forVar)
+				}
+			}
+			blockStack = blockStack[:len(blockStack)-1]
+			outerIndent := strings.Repeat("    ", len(blockStack)+1)
+			statements = append(statements, fmt.Sprintf("%s}", outerIndent))
+		} else if matches := dimRegex.FindStringSubmatch(line); len(matches) > 2 {
 			varName := matches[1]
 			exprStr := matches[2]
 
@@ -418,9 +685,12 @@ func Transpile(vbxPath string) (string, error) {
 				needsStdio = true
 				needsStdlib = true
 			}
+			if strings.Contains(cExpr, "strcmp") {
+				needsString = true
+			}
 
 			symbolTable[varName] = dt
-			statements = append(statements, fmt.Sprintf("    %s %s = %s;", string(dt), varName, cExpr))
+			statements = append(statements, fmt.Sprintf("%s%s %s = %s;", indent, string(dt), varName, cExpr))
 		} else if matches := assignRegex.FindStringSubmatch(line); len(matches) > 2 && !strings.HasPrefix(strings.TrimSpace(line), "Print") {
 			varName := matches[1]
 			exprStr := matches[2]
@@ -458,15 +728,18 @@ func Transpile(vbxPath string) (string, error) {
 				needsStdio = true
 				needsStdlib = true
 			}
+			if strings.Contains(cExpr, "strcmp") {
+				needsString = true
+			}
 
-			statements = append(statements, fmt.Sprintf("    %s = %s;", varName, cExpr))
+			statements = append(statements, fmt.Sprintf("%s%s = %s;", indent, varName, cExpr))
 		} else if matches := printQuoteRegex.FindStringSubmatch(line); len(matches) > 1 {
 			msg := matches[1]
-			statements = append(statements, fmt.Sprintf("    printf(\"%s\\n\");", msg))
+			statements = append(statements, fmt.Sprintf("%sprintf(\"%s\\n\");", indent, msg))
 			needsStdio = true
 		} else if matches := printParenQuoteRegex.FindStringSubmatch(line); len(matches) > 1 {
 			msg := matches[1]
-			statements = append(statements, fmt.Sprintf("    printf(\"%s\\n\");", msg))
+			statements = append(statements, fmt.Sprintf("%sprintf(\"%s\\n\");", indent, msg))
 			needsStdio = true
 		} else if matches := printParenExprRegex.FindStringSubmatch(line); len(matches) > 1 {
 			exprStr := matches[1]
@@ -486,6 +759,9 @@ func Transpile(vbxPath string) (string, error) {
 				needsConcatHelper = true
 				needsStdlib = true
 			}
+			if strings.Contains(cExpr, "strcmp") {
+				needsString = true
+			}
 			needsStdio = true
 
 			var fmtSpec string
@@ -497,7 +773,7 @@ func Transpile(vbxPath string) (string, error) {
 			case TypeString:
 				fmtSpec = "%s"
 			}
-			statements = append(statements, fmt.Sprintf("    printf(\"%s\\n\", %s);", fmtSpec, cExpr))
+			statements = append(statements, fmt.Sprintf("%sprintf(\"%s\\n\", %s);", indent, fmtSpec, cExpr))
 		} else if matches := printExprRegex.FindStringSubmatch(line); len(matches) > 1 {
 			exprStr := matches[1]
 			exprNode, err := parseExpr(exprStr)
@@ -516,6 +792,9 @@ func Transpile(vbxPath string) (string, error) {
 				needsConcatHelper = true
 				needsStdlib = true
 			}
+			if strings.Contains(cExpr, "strcmp") {
+				needsString = true
+			}
 			needsStdio = true
 
 			var fmtSpec string
@@ -527,7 +806,7 @@ func Transpile(vbxPath string) (string, error) {
 			case TypeString:
 				fmtSpec = "%s"
 			}
-			statements = append(statements, fmt.Sprintf("    printf(\"%s\\n\", %s);", fmtSpec, cExpr))
+			statements = append(statements, fmt.Sprintf("%sprintf(\"%s\\n\", %s);", indent, fmtSpec, cExpr))
 		} else {
 			return "", fmt.Errorf("syntax error on line %d: unsupported line %q", lineNum, line)
 		}
@@ -537,15 +816,21 @@ func Transpile(vbxPath string) (string, error) {
 		return "", fmt.Errorf("error reading file %s: %w", vbxPath, err)
 	}
 
+	if len(blockStack) > 0 {
+		return "", fmt.Errorf("syntax error: unclosed control flow block at end of file")
+	}
+
 	var sb strings.Builder
 	if needsStdio {
 		sb.WriteString("#include <stdio.h>\n")
 	}
-	if needsStdlib {
+	if needsStdlib || needsConcatHelper {
 		sb.WriteString("#include <stdlib.h>\n")
+	}
+	if needsString || needsConcatHelper {
 		sb.WriteString("#include <string.h>\n")
 	}
-	if needsStdio || needsStdlib {
+	if needsStdio || needsStdlib || needsString || needsConcatHelper {
 		sb.WriteString("\n")
 	}
 
