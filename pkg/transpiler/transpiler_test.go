@@ -715,3 +715,180 @@ func TestBuildInteractiveAppExample(t *testing.T) {
 		t.Fatalf("Expected built interactive_app binary at %s, but file does not exist", builtPath)
 	}
 }
+
+func TestTranspileWhileLoop(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_while.vbx")
+	content := []byte(`
+Dim count = 3
+While count > 0
+    Print count
+    count = count - 1
+Wend
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"while ((count > 0LL)) {",
+		"count = (count - 1LL);",
+		"}",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileElseIf(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_elseif.vbx")
+	content := []byte(`
+Dim score = 85
+If score >= 90 Then
+    Print "A"
+ElseIf score >= 80 Then
+    Print "B"
+ElseIf score >= 70 Then
+    Print "C"
+Else
+    Print "F"
+End If
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"if ((score >= 90LL)) {",
+		"} else if ((score >= 80LL)) {",
+		"} else if ((score >= 70LL)) {",
+		"} else {",
+		"}",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileStringConcatAndFunctions(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_str_fn.vbx")
+	content := []byte(`
+Dim num = 10
+Dim msg = "Count: " & num & " items"
+Dim u = UCase("hello")
+Dim l = LCase("WORLD")
+Dim leftStr = Left("Visual", 2)
+Dim rightStr = Right("Basic", 3)
+Dim midStr = Mid("Transpiler", 2, 4)
+Dim length = Len("Test")
+Print msg
+Print u & l & leftStr & rightStr & midStr
+Print length
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		`const char* msg = vbx_concat(vbx_concat("Count: ", vbx_int_to_str(num)), " items");`,
+		`const char* u = vbx_ucase("hello");`,
+		`const char* l = vbx_lcase("WORLD");`,
+		`const char* leftStr = vbx_left("Visual", 2LL);`,
+		`const char* rightStr = vbx_right("Basic", 3LL);`,
+		`const char* midStr = vbx_mid("Transpiler", 2LL, 4LL);`,
+		`long long length = ((long long)strlen("Test"));`,
+		"static char* vbx_ucase",
+		"static char* vbx_lcase",
+		"static char* vbx_left",
+		"static char* vbx_right",
+		"static char* vbx_mid",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileNewFeatureErrors(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "Wend without While",
+			content: "Wend",
+		},
+		{
+			name:    "Unclosed While block",
+			content: "While 1 == 1\nPrint 1",
+		},
+		{
+			name:    "ElseIf without If",
+			content: "ElseIf 1 == 1 Then\nPrint 1\nEnd If",
+		},
+		{
+			name:    "ElseIf after Else",
+			content: "If 1 == 1 Then\nPrint 1\nElse\nPrint 2\nElseIf 2 == 2 Then\nPrint 3\nEnd If",
+		},
+		{
+			name:    "Len with invalid args",
+			content: "Dim x = Len()",
+		},
+		{
+			name:    "Mid with invalid arg count",
+			content: `Dim s = Mid("abc", 1)`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			vbxFile := filepath.Join(tmpDir, "err.vbx")
+			if err := os.WriteFile(vbxFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write temp vbx file: %v", err)
+			}
+
+			_, err := Transpile(vbxFile)
+			if err == nil {
+				t.Errorf("Expected transpile error for %q, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestBuildAndRunStringAndLoopsExample(t *testing.T) {
+	examplePath := filepath.Join("..", "..", "examples", "string_and_loops.vbx")
+	if _, err := os.Stat(examplePath); os.IsNotExist(err) {
+		t.Skip("examples/string_and_loops.vbx not found")
+	}
+
+	err := BuildAndRun(examplePath)
+	if err != nil {
+		t.Fatalf("BuildAndRun examples/string_and_loops.vbx failed: %v", err)
+	}
+}
