@@ -498,6 +498,81 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 	}
 }
 
+
+func parseMsgBoxArgs(rawArgs string) ([]string, error) {
+	trimmed := strings.TrimSpace(rawArgs)
+	if trimmed == "" {
+		return nil, fmt.Errorf("MsgBox requires at least 1 argument")
+	}
+
+	// First, if trimmed starts with "(" and ends with ")", check if the outer parentheses wrap the ENTIRE argument list.
+	if strings.HasPrefix(trimmed, "(") && strings.HasSuffix(trimmed, ")") {
+		depth := 0
+		inString := false
+		enclosed := true
+		for i := 0; i < len(trimmed); i++ {
+			ch := trimmed[i]
+			if ch == '"' {
+				inString = !inString
+			} else if !inString {
+				if ch == '(' {
+					depth++
+				} else if ch == ')' {
+					depth--
+					if depth == 0 && i < len(trimmed)-1 {
+						enclosed = false
+						break
+					}
+				}
+			}
+		}
+		if enclosed && depth == 0 {
+			trimmed = strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+		}
+	}
+
+	if trimmed == "" {
+		return nil, fmt.Errorf("MsgBox requires at least 1 argument")
+	}
+
+	var args []string
+	var current strings.Builder
+	depth := 0
+	inString := false
+
+	for i := 0; i < len(trimmed); i++ {
+		ch := trimmed[i]
+		if ch == '"' {
+			inString = !inString
+			current.WriteByte(ch)
+		} else if inString {
+			current.WriteByte(ch)
+		} else {
+			if ch == '(' {
+				depth++
+				current.WriteByte(ch)
+			} else if ch == ')' {
+				depth--
+				current.WriteByte(ch)
+			} else if ch == ',' && depth == 0 {
+				args = append(args, strings.TrimSpace(current.String()))
+				current.Reset()
+			} else {
+				current.WriteByte(ch)
+			}
+		}
+	}
+	if current.Len() > 0 {
+		args = append(args, strings.TrimSpace(current.String()))
+	}
+
+	if len(args) == 0 || len(args) > 2 {
+		return nil, fmt.Errorf("MsgBox requires 1 or 2 arguments, got %d", len(args))
+	}
+
+	return args, nil
+}
+
 // Transpile converts a .vbx file content into standard C code.
 type blockKind int
 
@@ -534,6 +609,7 @@ func Transpile(vbxPath string) (string, error) {
 	needsStdlib := false
 	needsString := false
 	needsConcatHelper := false
+	needsMsgBox := false
 
 	dimRegex := regexp.MustCompile(`(?i)^\s*Dim\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
 	assignRegex := regexp.MustCompile(`(?i)^\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)$`)
@@ -547,6 +623,7 @@ func Transpile(vbxPath string) (string, error) {
 	endIfRegex := regexp.MustCompile(`(?i)^\s*End\s+If\s*$`)
 	forRegex := regexp.MustCompile(`(?i)^\s*For\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(.+)\s+To\s+(.+)\s*$`)
 	nextRegex := regexp.MustCompile(`(?i)^\s*Next(?:\s+([a-zA-Z_][a-zA-Z0-9_]*))?\s*$`)
+	msgboxRegex := regexp.MustCompile(`(?i)^\s*MsgBox\b(.*)$`)
 
 	scanner := bufio.NewScanner(file)
 	lineNum := 0
@@ -554,7 +631,7 @@ func Transpile(vbxPath string) (string, error) {
 		lineNum++
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
+		if trimmed == "" || strings.HasPrefix(trimmed, "'") {
 			continue
 		}
 
@@ -691,7 +768,47 @@ func Transpile(vbxPath string) (string, error) {
 
 			symbolTable[varName] = dt
 			statements = append(statements, fmt.Sprintf("%s%s %s = %s;", indent, string(dt), varName, cExpr))
-		} else if matches := assignRegex.FindStringSubmatch(line); len(matches) > 2 && !strings.HasPrefix(strings.TrimSpace(line), "Print") {
+		} else if matches := msgboxRegex.FindStringSubmatch(line); len(matches) > 1 {
+			rawArgs := matches[1]
+			args, err := parseMsgBoxArgs(rawArgs)
+			if err != nil {
+				return "", fmt.Errorf("syntax error on line %d: invalid MsgBox statement: %w", lineNum, err)
+			}
+
+			msgNode, err := parseExpr(args[0])
+			if err != nil {
+				return "", fmt.Errorf("syntax error on line %d: invalid message expression in MsgBox: %w", lineNum, err)
+			}
+			msgC, err := formatStringArg(msgNode, symbolTable)
+			if err != nil {
+				return "", fmt.Errorf("type error on line %d: invalid message argument for MsgBox: %w", lineNum, err)
+			}
+
+			titleC := "NULL"
+			if len(args) == 2 {
+				titleNode, err := parseExpr(args[1])
+				if err != nil {
+					return "", fmt.Errorf("syntax error on line %d: invalid title expression in MsgBox: %w", lineNum, err)
+				}
+				titleC, err = formatStringArg(titleNode, symbolTable)
+				if err != nil {
+					return "", fmt.Errorf("type error on line %d: invalid title argument for MsgBox: %w", lineNum, err)
+				}
+			}
+
+			if strings.Contains(msgC, "vbx_concat") || strings.Contains(msgC, "vbx_") || strings.Contains(titleC, "vbx_concat") || strings.Contains(titleC, "vbx_") {
+				needsConcatHelper = true
+			}
+			if strings.Contains(msgC, "strcmp") || strings.Contains(titleC, "strcmp") {
+				needsString = true
+			}
+
+			needsMsgBox = true
+			needsStdio = true
+			needsStdlib = true
+
+			statements = append(statements, fmt.Sprintf("%svbx_msgbox(%s, %s);", indent, msgC, titleC))
+		} else if matches := assignRegex.FindStringSubmatch(line); len(matches) > 2 && !strings.HasPrefix(strings.TrimSpace(line), "Print") && !strings.HasPrefix(strings.TrimSpace(line), "MsgBox") {
 			varName := matches[1]
 			exprStr := matches[2]
 
@@ -821,17 +938,51 @@ func Transpile(vbxPath string) (string, error) {
 	}
 
 	var sb strings.Builder
+	if needsMsgBox {
+		sb.WriteString("#ifdef _WIN32\n#include <windows.h>\n#endif\n")
+	}
 	if needsStdio {
 		sb.WriteString("#include <stdio.h>\n")
 	}
-	if needsStdlib || needsConcatHelper {
+	if needsStdlib || needsConcatHelper || needsMsgBox {
 		sb.WriteString("#include <stdlib.h>\n")
 	}
-	if needsString || needsConcatHelper {
+	if needsString || needsConcatHelper || needsMsgBox {
 		sb.WriteString("#include <string.h>\n")
 	}
-	if needsStdio || needsStdlib || needsString || needsConcatHelper {
+	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox {
 		sb.WriteString("\n")
+	}
+
+	if needsMsgBox {
+		sb.WriteString(`#ifdef _WIN32
+static void vbx_msgbox(const char* message, const char* title) {
+    MessageBoxA(NULL, message, title ? title : "VBX", MB_OK | MB_ICONINFORMATION);
+}
+#elif defined(__APPLE__)
+static void vbx_msgbox(const char* message, const char* title) {
+    const char* t = title ? title : "VBX";
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "osascript -e 'display dialog \"%s\" with title \"%s\" buttons {\"OK\"} default button \"OK\"' >/dev/null 2>&1", message, t);
+    system(cmd);
+}
+#else
+static void vbx_msgbox(const char* message, const char* title) {
+    const char* t = title ? title : "VBX";
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "zenity --info --title=\"%s\" --text=\"%s\" 2>/dev/null", t, message);
+    int ret = system(cmd);
+    if (ret != 0) {
+        printf("+--------------------------------------------------+\n");
+        printf("| %-48s |\n", t);
+        printf("+--------------------------------------------------+\n");
+        printf("| %-48s |\n", message);
+        printf("+--------------------------------------------------+\n");
+    }
+}
+#endif
+
+`)
 	}
 
 	if needsConcatHelper {

@@ -259,3 +259,78 @@ Print sum
 		t.Fatalf("BuildAndRun failed: %v", err)
 	}
 }
+
+func TestTranspileMsgBox(t *testing.T) {
+	tests := []struct {
+		name             string
+		content          string
+		expectedSnippets []string
+	}{
+		{
+			name:    "Basic string MsgBox statement",
+			content: `MsgBox "Hello World"`,
+			expectedSnippets: []string{
+				"#ifdef _WIN32\n#include <windows.h>\n#endif",
+				"vbx_msgbox(",
+				`vbx_msgbox("Hello World", NULL);`,
+				"MessageBoxA(NULL, message, title ? title : \"VBX\", MB_OK | MB_ICONINFORMATION);",
+				"osascript",
+				"zenity",
+			},
+		},
+		{
+			name:    "MsgBox with parens and title",
+			content: `MsgBox("Operation Complete", "Success")`,
+			expectedSnippets: []string{
+				`vbx_msgbox("Operation Complete", "Success");`,
+			},
+		},
+		{
+			name:    "MsgBox with variables and expression concatenation",
+			content: "Dim result = 42\nDim titleStr = \"Calculation Result\"\nMsgBox \"The answer is: \" + result, titleStr",
+			expectedSnippets: []string{
+				"long long result = 42LL;",
+				`const char* titleStr = "Calculation Result";`,
+				`vbx_msgbox(vbx_concat("The answer is: ", vbx_int_to_str(result)), titleStr);`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			vbxFile := filepath.Join(tmpDir, "test_msgbox.vbx")
+			if err := os.WriteFile(vbxFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write temp vbx file: %v", err)
+			}
+
+			cCode, err := Transpile(vbxFile)
+			if err != nil {
+				t.Fatalf("Transpile failed: %v", err)
+			}
+
+			for _, snippet := range tt.expectedSnippets {
+				if !strings.Contains(cCode, snippet) {
+					t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+				}
+			}
+		})
+	}
+}
+
+func TestBuildAndRunMsgBox(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "run_msgbox.vbx")
+	content := []byte(`
+Dim x = 100
+MsgBox "Value: " + x, "Test Title"
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed: %v", err)
+	}
+}

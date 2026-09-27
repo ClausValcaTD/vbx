@@ -1,0 +1,7 @@
+' Basic MsgBox demonstration
+MsgBox "Hello from Visual Basic X Popup!"
+
+' MsgBox with variable calculation and custom title
+Dim score = 95
+Dim title = "Achievement Unlocked"
+MsgBox "Your final score is: " + score, title
