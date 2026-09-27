@@ -2,6 +2,7 @@ package transpiler
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -483,5 +484,111 @@ Print res
 	err := BuildAndRun(vbxFile)
 	if err != nil {
 		t.Fatalf("BuildAndRun failed: %v", err)
+	}
+}
+
+
+func TestBuildDefaultOutput(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "testapp.vbx")
+	content := []byte("Dim x = 10\nPrint x * 2")
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	if err := os.Chdir(tmpDir); err != nil {
+		t.Fatalf("Chdir failed: %v", err)
+	}
+	defer os.Chdir(origDir)
+
+	builtPath, err := Build("testapp.vbx", "", false)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	if _, err := os.Stat(builtPath); os.IsNotExist(err) {
+		t.Fatalf("Expected built binary at %s, but file does not exist", builtPath)
+	}
+
+	cFilePath := strings.TrimSuffix(builtPath, filepath.Ext(builtPath)) + ".c"
+	if _, err := os.Stat(cFilePath); !os.IsNotExist(err) {
+		t.Errorf("Expected intermediate .c file %s to be removed, but it exists", cFilePath)
+	}
+
+	cmd := exec.Command("./" + builtPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Executing built binary failed: %v, output: %s", err, string(output))
+	}
+	if !strings.Contains(string(output), "20") {
+		t.Errorf("Expected binary output to contain '20', got: %s", string(output))
+	}
+}
+
+func TestBuildCustomOutputAndKeepC(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "source.vbx")
+	content := []byte("Print \"Hello Build\"")
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	customOut := filepath.Join(tmpDir, "custom_bin")
+	builtPath, err := Build(vbxFile, customOut, true)
+	if err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+
+	if _, err := os.Stat(builtPath); os.IsNotExist(err) {
+		t.Fatalf("Expected built binary at %s, but file does not exist", builtPath)
+	}
+
+	ext := filepath.Ext(builtPath)
+	expectedCFile := strings.TrimSuffix(builtPath, ext) + ".c"
+	if _, err := os.Stat(expectedCFile); os.IsNotExist(err) {
+		t.Errorf("Expected intermediate .c file %s to exist with keepC=true, but it does not", expectedCFile)
+	}
+
+	cmd := exec.Command(builtPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Executing built binary failed: %v, output: %s", err, string(output))
+	}
+	if !strings.Contains(string(output), "Hello Build") {
+		t.Errorf("Expected binary output to contain 'Hello Build', got: %s", string(output))
+	}
+}
+
+func TestBuildPopupExample(t *testing.T) {
+	popupPath := filepath.Join("..", "..", "examples", "popup.vbx")
+	if _, err := os.Stat(popupPath); os.IsNotExist(err) {
+		t.Skip("examples/popup.vbx not found")
+	}
+
+	tmpDir := t.TempDir()
+	outBin := filepath.Join(tmpDir, "popup_standalone")
+
+	builtPath, err := Build(popupPath, outBin, false)
+	if err != nil {
+		t.Fatalf("Build popup.vbx failed: %v", err)
+	}
+
+	if _, err := os.Stat(builtPath); os.IsNotExist(err) {
+		t.Fatalf("Expected built popup binary at %s, but file does not exist", builtPath)
+	}
+
+	cmd := exec.Command(builtPath)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Executing popup standalone binary failed: %v, output: %s", err, string(output))
+	}
+
+	expectedSnippet := "Hello from Visual Basic X Popup!"
+	if !strings.Contains(string(output), expectedSnippet) {
+		t.Errorf("Expected popup output to contain %q, got: %s", expectedSnippet, string(output))
 	}
 }
