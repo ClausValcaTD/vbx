@@ -1,0 +1,39 @@
+' VBX Example: Strings and Loops
+' Demonstrating While...Wend loops, If-ElseIf-Else statements,
+' string concatenation (&), and built-in string functions.
+
+Dim count = 3
+Print "--- While Loop Countdown ---"
+While count > 0
+    Print "Count: " & count
+    count = count - 1
+Wend
+
+Print "--- If-ElseIf-Else Chain ---"
+Dim score = 85
+If score >= 90 Then
+    Print "Grade: A"
+ElseIf score >= 80 Then
+    Print "Grade: B"
+ElseIf score >= 70 Then
+    Print "Grade: C"
+Else
+    Print "Grade: F"
+End If
+
+Print "--- String Functions & Concatenation ---"
+Dim text = "Hello Visual Basic X"
+Dim upperText = UCase(text)
+Dim lowerText = LCase(text)
+Dim firstPart = Left(text, 5)
+Dim lastPart = Right(text, 7)
+Dim middlePart = Mid(text, 7, 6)
+Dim totalLen = Len(text)
+
+Print "Original: " & text
+Print "Length: " & totalLen
+Print "UCase: " & upperText
+Print "LCase: " & lowerText
+Print "Left 5: " & firstPart
+Print "Right 7: " & lastPart
+Print "Mid (7,6): " & middlePart

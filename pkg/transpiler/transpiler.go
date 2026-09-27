@@ -101,8 +101,11 @@ type CallNode struct {
 }
 
 func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
-	if c.Name == "InputBox" || c.Name == "File.Read" {
+	if c.Name == "InputBox" || c.Name == "File.Read" || c.Name == "UCase" || c.Name == "LCase" || c.Name == "Left" || c.Name == "Right" || c.Name == "Mid" {
 		return TypeString, nil
+	}
+	if c.Name == "Len" {
+		return TypeInt, nil
 	}
 	t, ok := env[c.Name]
 	if !ok {
@@ -115,6 +118,98 @@ func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
 }
 
 func (c *CallNode) ToC(env map[string]DataType) (string, error) {
+	if c.Name == "Len" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("Len requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("((long long)strlen(%s))", arg0C), nil
+	}
+	if c.Name == "UCase" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("UCase requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_ucase(%s)", arg0C), nil
+	}
+	if c.Name == "LCase" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("LCase requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_lcase(%s)", arg0C), nil
+	}
+	if c.Name == "Left" {
+		if len(c.Args) != 2 {
+			return "", fmt.Errorf("Left requires 2 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1Type, err := c.Args[1].ExprType(env)
+		if err != nil || arg1Type != TypeInt {
+			return "", fmt.Errorf("second argument to Left must be an integer")
+		}
+		arg1C, err := c.Args[1].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_left(%s, %s)", arg0C, arg1C), nil
+	}
+	if c.Name == "Right" {
+		if len(c.Args) != 2 {
+			return "", fmt.Errorf("Right requires 2 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1Type, err := c.Args[1].ExprType(env)
+		if err != nil || arg1Type != TypeInt {
+			return "", fmt.Errorf("second argument to Right must be an integer")
+		}
+		arg1C, err := c.Args[1].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_right(%s, %s)", arg0C, arg1C), nil
+	}
+	if c.Name == "Mid" {
+		if len(c.Args) != 3 {
+			return "", fmt.Errorf("Mid requires 3 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1Type, err := c.Args[1].ExprType(env)
+		if err != nil || arg1Type != TypeInt {
+			return "", fmt.Errorf("second argument to Mid must be an integer")
+		}
+		arg1C, err := c.Args[1].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		arg2Type, err := c.Args[2].ExprType(env)
+		if err != nil || arg2Type != TypeInt {
+			return "", fmt.Errorf("third argument to Mid must be an integer")
+		}
+		arg2C, err := c.Args[2].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_mid(%s, %s, %s)", arg0C, arg1C, arg2C), nil
+	}
 	if c.Name == "InputBox" {
 		if len(c.Args) < 1 || len(c.Args) > 2 {
 			return "", fmt.Errorf("InputBox requires 1 or 2 arguments, got %d", len(c.Args))
@@ -195,6 +290,13 @@ func (b *BinaryNode) ExprType(env map[string]DataType) (DataType, error) {
 		return TypeUnknown, fmt.Errorf("incompatible types for comparison %s: %s and %s", b.Op, lt, rt)
 	}
 
+	if b.Op == "&" {
+		if (lt == TypeString || lt == TypeInt || lt == TypeDouble) && (rt == TypeString || rt == TypeInt || rt == TypeDouble) {
+			return TypeString, nil
+		}
+		return TypeUnknown, fmt.Errorf("incompatible types for concatenation operator &: %s and %s", lt, rt)
+	}
+
 	if b.Op == "%" {
 		if lt == TypeInt && rt == TypeInt {
 			return TypeInt, nil
@@ -263,6 +365,18 @@ func (b *BinaryNode) ToC(env map[string]DataType) (string, error) {
 			cOp = "!="
 		}
 		return fmt.Sprintf("(%s %s %s)", leftC, cOp, rightC), nil
+	}
+
+	if b.Op == "&" {
+		leftC, err := formatStringArg(b.Left, env)
+		if err != nil {
+			return "", err
+		}
+		rightC, err := formatStringArg(b.Right, env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_concat(%s, %s)", leftC, rightC), nil
 	}
 
 	targetType, err := b.ExprType(env)
@@ -438,7 +552,7 @@ func tokenizeExpr(input string) ([]Token, error) {
 			continue
 		}
 
-		if ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' {
+		if ch == '+' || ch == '-' || ch == '*' || ch == '/' || ch == '%' || ch == '&' {
 			tokens = append(tokens, Token{Type: TokOp, Val: string(ch)})
 			i++
 			continue
@@ -520,7 +634,7 @@ func (p *exprParser) parseAddition() (ExprNode, error) {
 
 	for p.pos < len(p.tokens) {
 		tok := p.tokens[p.pos]
-		if tok.Type == TokOp && (tok.Val == "+" || tok.Val == "-") {
+		if tok.Type == TokOp && (tok.Val == "+" || tok.Val == "-" || tok.Val == "&") {
 			p.pos++
 			right, err := p.parseMultiplication()
 			if err != nil {
@@ -688,7 +802,9 @@ type blockKind int
 
 const (
 	blockIf blockKind = iota
+	blockElseIf
 	blockElse
+	blockWhile
 	blockFor
 	blockSub
 	blockFunction
@@ -782,6 +898,9 @@ func Transpile(vbxPath string) (string, error) {
 	dimRegex := regexp.MustCompile("(?i)^\\s*Dim\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)$")
 	assignRegex := regexp.MustCompile("(?i)^\\s*([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)$")
 	ifRegex := regexp.MustCompile("(?i)^\\s*If\\s+(.+)\\s+Then\\s*$")
+	elseIfRegex := regexp.MustCompile("(?i)^\\s*ElseIf\\s+(.+)\\s+Then\\s*$")
+	whileRegex := regexp.MustCompile("(?i)^\\s*While\\s+(.+)\\s*$")
+	wendRegex := regexp.MustCompile("(?i)^\\s*Wend\\s*$")
 	elseRegex := regexp.MustCompile("(?i)^\\s*Else\\s*$")
 	endIfRegex := regexp.MustCompile("(?i)^\\s*End\\s+If\\s*$")
 	forRegex := regexp.MustCompile("(?i)^\\s*For\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)\\s+To\\s+(.+)\\s*$")
@@ -904,6 +1023,12 @@ func Transpile(vbxPath string) (string, error) {
 	globalEnv := make(map[string]DataType)
 	globalEnv["InputBox"] = TypeString
 	globalEnv["File.Read"] = TypeString
+	globalEnv["Len"] = TypeInt
+	globalEnv["UCase"] = TypeString
+	globalEnv["LCase"] = TypeString
+	globalEnv["Left"] = TypeString
+	globalEnv["Right"] = TypeString
+	globalEnv["Mid"] = TypeString
 	for _, fn := range functions {
 		globalEnv[fn.Name] = fn.ReturnType
 	}
@@ -1028,32 +1153,42 @@ func Transpile(vbxPath string) (string, error) {
 		var validateCalls func(n ExprNode) error
 		validateCalls = func(n ExprNode) error {
 			if call, ok := n.(*CallNode); ok {
-				if call.Name == "InputBox" || call.Name == "File.Read" {
-					if call.Name == "File.Read" && len(call.Args) != 1 {
-						return fmt.Errorf("type error: File.Read expected 1 argument, got %d", len(call.Args))
-					}
-					if call.Name == "InputBox" && (len(call.Args) < 1 || len(call.Args) > 2) {
+				switch call.Name {
+				case "InputBox":
+					if len(call.Args) < 1 || len(call.Args) > 2 {
 						return fmt.Errorf("type error: InputBox expected 1 or 2 arguments, got %d", len(call.Args))
 					}
-					for _, arg := range call.Args {
-						if err := validateCalls(arg); err != nil {
-							return err
-						}
+				case "File.Read":
+					if len(call.Args) != 1 {
+						return fmt.Errorf("type error: File.Read expected 1 argument, got %d", len(call.Args))
 					}
-					return nil
-				}
-				targetFn, exists := funcMap[call.Name]
-				if !exists {
-					return fmt.Errorf("undefined function: %s", call.Name)
-				}
-				if len(call.Args) != len(targetFn.Params) {
-					return fmt.Errorf("type error: %s expected %d arguments, got %d", call.Name, len(targetFn.Params), len(call.Args))
+				case "Len", "UCase", "LCase":
+					if len(call.Args) != 1 {
+						return fmt.Errorf("type error: %s expected 1 argument, got %d", call.Name, len(call.Args))
+					}
+				case "Left", "Right":
+					if len(call.Args) != 2 {
+						return fmt.Errorf("type error: %s expected 2 arguments, got %d", call.Name, len(call.Args))
+					}
+				case "Mid":
+					if len(call.Args) != 3 {
+						return fmt.Errorf("type error: %s expected 3 arguments, got %d", call.Name, len(call.Args))
+					}
+				default:
+					targetFn, exists := funcMap[call.Name]
+					if !exists {
+						return fmt.Errorf("undefined function: %s", call.Name)
+					}
+					if len(call.Args) != len(targetFn.Params) {
+						return fmt.Errorf("type error: %s expected %d arguments, got %d", call.Name, len(targetFn.Params), len(call.Args))
+					}
 				}
 				for _, arg := range call.Args {
 					if err := validateCalls(arg); err != nil {
 						return err
 					}
 				}
+				return nil
 			} else if bin, ok := n.(*BinaryNode); ok {
 				if err := validateCalls(bin.Left); err != nil {
 					return err
@@ -1102,19 +1237,91 @@ func Transpile(vbxPath string) (string, error) {
 				}
 				stmts = append(stmts, fmt.Sprintf("%sif (%s) {", indent, cCond))
 				blockStack = append(blockStack, blockInfo{kind: blockIf})
+			} else if matches := elseIfRegex.FindStringSubmatch(line); len(matches) > 1 {
+				if len(blockStack) == 0 {
+					return nil, fmt.Errorf("syntax error on line %d: ElseIf without matching If", lineNum)
+				}
+				topKind := blockStack[len(blockStack)-1].kind
+				if topKind == blockElse {
+					return nil, fmt.Errorf("syntax error on line %d: ElseIf after Else", lineNum)
+				}
+				if topKind != blockIf && topKind != blockElseIf {
+					return nil, fmt.Errorf("syntax error on line %d: ElseIf without matching If", lineNum)
+				}
+				condStr := matches[1]
+				condNode, err := parseExpr(condStr)
+				if err != nil {
+					return nil, fmt.Errorf("syntax error on line %d: invalid condition in ElseIf statement: %w", lineNum, err)
+				}
+				_, err = condNode.ExprType(localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+				}
+				if err := validateCalls(condNode); err != nil {
+					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+				}
+				cCond, err := condNode.ToC(localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+				}
+				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
+					needsConcatHelper = true
+					needsStdio = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "strcmp") {
+					needsString = true
+				}
+				outerIndent := strings.Repeat("    ", len(blockStack)-1)
+				stmts = append(stmts, fmt.Sprintf("%s} else if (%s) {", outerIndent, cCond))
+				blockStack[len(blockStack)-1] = blockInfo{kind: blockElseIf}
 			} else if elseRegex.MatchString(line) {
-				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockIf {
+				if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElseIf) {
 					return nil, fmt.Errorf("syntax error on line %d: Else without matching If", lineNum)
 				}
 				blockStack[len(blockStack)-1] = blockInfo{kind: blockElse}
-				outerIndent := strings.Repeat("    ", len(blockStack))
+				outerIndent := strings.Repeat("    ", len(blockStack)-1)
 				stmts = append(stmts, fmt.Sprintf("%s} else {", outerIndent))
 			} else if endIfRegex.MatchString(line) {
-				if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElse) {
+				if len(blockStack) == 0 || (blockStack[len(blockStack)-1].kind != blockIf && blockStack[len(blockStack)-1].kind != blockElseIf && blockStack[len(blockStack)-1].kind != blockElse) {
 					return nil, fmt.Errorf("syntax error on line %d: End If without matching If", lineNum)
 				}
 				blockStack = blockStack[:len(blockStack)-1]
-				outerIndent := strings.Repeat("    ", len(blockStack)+1)
+				outerIndent := strings.Repeat("    ", len(blockStack))
+				stmts = append(stmts, fmt.Sprintf("%s}", outerIndent))
+			} else if matches := whileRegex.FindStringSubmatch(line); len(matches) > 1 {
+				condStr := matches[1]
+				condNode, err := parseExpr(condStr)
+				if err != nil {
+					return nil, fmt.Errorf("syntax error on line %d: invalid condition in While statement: %w", lineNum, err)
+				}
+				_, err = condNode.ExprType(localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+				}
+				if err := validateCalls(condNode); err != nil {
+					return nil, fmt.Errorf("type error on line %d: %w", lineNum, err)
+				}
+				cCond, err := condNode.ToC(localEnv)
+				if err != nil {
+					return nil, fmt.Errorf("transpile error on line %d: %w", lineNum, err)
+				}
+				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
+					needsConcatHelper = true
+					needsStdio = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "strcmp") {
+					needsString = true
+				}
+				stmts = append(stmts, fmt.Sprintf("%swhile (%s) {", indent, cCond))
+				blockStack = append(blockStack, blockInfo{kind: blockWhile})
+			} else if wendRegex.MatchString(line) {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockWhile {
+					return nil, fmt.Errorf("syntax error on line %d: Wend without matching While", lineNum)
+				}
+				blockStack = blockStack[:len(blockStack)-1]
+				outerIndent := strings.Repeat("    ", len(blockStack))
 				stmts = append(stmts, fmt.Sprintf("%s}", outerIndent))
 			} else if matches := forRegex.FindStringSubmatch(line); len(matches) > 3 {
 				varName := matches[1]
@@ -1518,7 +1725,17 @@ func Transpile(vbxPath string) (string, error) {
 		}
 
 		if len(blockStack) > 0 {
-			return nil, fmt.Errorf("syntax error: unclosed control flow block at end of block")
+			topBlock := blockStack[len(blockStack)-1]
+			switch topBlock.kind {
+			case blockWhile:
+				return nil, fmt.Errorf("syntax error: unclosed While block")
+			case blockIf, blockElseIf, blockElse:
+				return nil, fmt.Errorf("syntax error: unclosed If block")
+			case blockFor:
+				return nil, fmt.Errorf("syntax error: unclosed For block")
+			default:
+				return nil, fmt.Errorf("syntax error: unclosed control flow block at end of block")
+			}
 		}
 
 		return stmts, nil
@@ -1562,6 +1779,9 @@ func Transpile(vbxPath string) (string, error) {
 	for _, tFn := range transpiledFunctions {
 		fullBodyCode += "\n" + strings.Join(tFn.stmts, "\n")
 	}
+	needsStringHelpers := false
+	needsCtype := false
+
 	if strings.Contains(fullBodyCode, "vbx_inputbox") {
 		needsInputBox = true
 	}
@@ -1571,21 +1791,36 @@ func Transpile(vbxPath string) (string, error) {
 	if strings.Contains(fullBodyCode, "vbx_file_write") {
 		needsFileWrite = true
 	}
+	if strings.Contains(fullBodyCode, "vbx_concat") || strings.Contains(fullBodyCode, "vbx_int_to_str") || strings.Contains(fullBodyCode, "vbx_double_to_str") {
+		needsConcatHelper = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_ucase") || strings.Contains(fullBodyCode, "vbx_lcase") || strings.Contains(fullBodyCode, "vbx_left") || strings.Contains(fullBodyCode, "vbx_right") || strings.Contains(fullBodyCode, "vbx_mid") {
+		needsStringHelpers = true
+		needsCtype = true
+		needsString = true
+		needsStdlib = true
+	}
+	if strings.Contains(fullBodyCode, "strlen") {
+		needsString = true
+	}
 
 	var sb strings.Builder
 	if needsMsgBox {
 		sb.WriteString("#ifdef _WIN32\n#include <windows.h>\n#endif\n")
 	}
+	if needsCtype {
+		sb.WriteString("#include <ctype.h>\n")
+	}
 	if needsStdio || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("#include <stdio.h>\n")
 	}
-	if needsStdlib || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
+	if needsStdlib || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers {
 		sb.WriteString("#include <stdlib.h>\n")
 	}
-	if needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
+	if needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers {
 		sb.WriteString("#include <string.h>\n")
 	}
-	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite {
+	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsCtype || needsStringHelpers {
 		sb.WriteString("\n")
 	}
 
@@ -1744,6 +1979,86 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("    if (!buf) return \"\";\n")
 		sb.WriteString("    snprintf(buf, 64, \"%f\", d);\n")
 		sb.WriteString("    return buf;\n")
+		sb.WriteString("}\n\n")
+	}
+
+	if needsStringHelpers {
+		sb.WriteString("static char* vbx_ucase(const char* s) {\n")
+		sb.WriteString("    if (!s) return \"\";\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    for (size_t i = 0; i < len; i++) {\n")
+		sb.WriteString("        res[i] = (char)toupper((unsigned char)s[i]);\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    res[len] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_lcase(const char* s) {\n")
+		sb.WriteString("    if (!s) return \"\";\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    char* res = (char*)malloc(len + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    for (size_t i = 0; i < len; i++) {\n")
+		sb.WriteString("        res[i] = (char)tolower((unsigned char)s[i]);\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    res[len] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_left(const char* s, long long n) {\n")
+		sb.WriteString("    if (!s || n <= 0) {\n")
+		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        if (res) res[0] = '\\0';\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    size_t count = (size_t)n;\n")
+		sb.WriteString("    if (count > len) count = len;\n")
+		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    memcpy(res, s, count);\n")
+		sb.WriteString("    res[count] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_right(const char* s, long long n) {\n")
+		sb.WriteString("    if (!s || n <= 0) {\n")
+		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        if (res) res[0] = '\\0';\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    size_t count = (size_t)n;\n")
+		sb.WriteString("    if (count > len) count = len;\n")
+		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    memcpy(res, s + (len - count), count);\n")
+		sb.WriteString("    res[count] = '\\0';\n")
+		sb.WriteString("    return res;\n")
+		sb.WriteString("}\n\n")
+
+		sb.WriteString("static char* vbx_mid(const char* s, long long start, long long length) {\n")
+		sb.WriteString("    if (!s || start < 1 || length <= 0) {\n")
+		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        if (res) res[0] = '\\0';\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t len = strlen(s);\n")
+		sb.WriteString("    size_t idx = (size_t)(start - 1);\n")
+		sb.WriteString("    if (idx >= len) {\n")
+		sb.WriteString("        char* res = (char*)malloc(1);\n")
+		sb.WriteString("        if (res) res[0] = '\\0';\n")
+		sb.WriteString("        return res ? res : \"\";\n")
+		sb.WriteString("    }\n")
+		sb.WriteString("    size_t count = (size_t)length;\n")
+		sb.WriteString("    if (idx + count > len) count = len - idx;\n")
+		sb.WriteString("    char* res = (char*)malloc(count + 1);\n")
+		sb.WriteString("    if (!res) return \"\";\n")
+		sb.WriteString("    memcpy(res, s + idx, count);\n")
+		sb.WriteString("    res[count] = '\\0';\n")
+		sb.WriteString("    return res;\n")
 		sb.WriteString("}\n\n")
 	}
 
