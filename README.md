@@ -168,7 +168,7 @@ vbx version
 - [x] Built-in String Library (`&`, `Len`, `UCase`, `LCase`, `Left`, `Right`, `Mid`)
 - [x] Standard File I/O (`File.Write`, `File.Read`)
 - [x] Standalone Binary Compiler (`vbx build` with `-O2`)
-- [ ] 1D Arrays (`Dim arr(size)`)
+- [x] 1D Arrays (`Dim arr(size)`)
 - [ ] VS Code Extension (Syntax Highlighting & Run integration)
 - [ ] Lightweight Dedicated Visual IDE (**VBX Studio**)
 - [ ] Embedded SQLite3 Database Support
