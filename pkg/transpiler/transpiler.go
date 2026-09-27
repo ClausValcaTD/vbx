@@ -1635,3 +1635,72 @@ func BuildAndRun(vbxPath string) error {
 
 	return nil
 }
+
+
+// Build transpiles the .vbx file, compiles it using the C compiler with -O2, and produces an output binary executable.
+func Build(vbxPath string, outputPath string, keepC bool) (string, error) {
+	cCode, err := Transpile(vbxPath)
+	if err != nil {
+		return "", err
+	}
+
+	compiler, err := FindCCompiler()
+	if err != nil {
+		return "", err
+	}
+
+	var outBinaryPath string
+	if outputPath != "" {
+		outBinaryPath = outputPath
+	} else {
+		base := filepath.Base(vbxPath)
+		ext := filepath.Ext(base)
+		name := strings.TrimSuffix(base, ext)
+		if name == "" {
+			name = "app"
+		}
+		outBinaryPath = name
+	}
+
+	if runtime.GOOS == "windows" {
+		if !strings.HasSuffix(strings.ToLower(outBinaryPath), ".exe") {
+			outBinaryPath += ".exe"
+		}
+	}
+
+	if dir := filepath.Dir(outBinaryPath); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return "", fmt.Errorf("failed to create output directory: %w", err)
+		}
+	}
+
+	var cFilePath string
+	if keepC {
+		ext := filepath.Ext(outBinaryPath)
+		cFilePath = strings.TrimSuffix(outBinaryPath, ext) + ".c"
+		if cFilePath == outBinaryPath {
+			cFilePath = outBinaryPath + ".c"
+		}
+	} else {
+		tmpFile, err := os.CreateTemp("", "vbx_*.c")
+		if err != nil {
+			return "", fmt.Errorf("failed to create temporary C file: %w", err)
+		}
+		cFilePath = tmpFile.Name()
+		tmpFile.Close()
+		defer os.Remove(cFilePath)
+	}
+
+	if err := os.WriteFile(cFilePath, []byte(cCode), 0644); err != nil {
+		return "", fmt.Errorf("failed to write C source file: %w", err)
+	}
+
+	cmdCompile := exec.Command(compiler, "-O2", cFilePath, "-o", outBinaryPath)
+	cmdCompile.Stdout = os.Stdout
+	cmdCompile.Stderr = os.Stderr
+	if err := cmdCompile.Run(); err != nil {
+		return "", fmt.Errorf("C compilation failed: %w", err)
+	}
+
+	return outBinaryPath, nil
+}
