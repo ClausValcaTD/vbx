@@ -592,3 +592,126 @@ func TestBuildPopupExample(t *testing.T) {
 		t.Errorf("Expected popup output to contain %q, got: %s", expectedSnippet, string(output))
 	}
 }
+
+func TestTranspileInputBox(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_inputbox.vbx")
+	content := []byte(`
+Dim input1 = InputBox("Enter prompt 1")
+Dim input2 = InputBox("Enter prompt 2", "Title 2")
+Print input1 + " " + input2
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		`vbx_inputbox("Enter prompt 1", NULL)`,
+		`vbx_inputbox("Enter prompt 2", "Title 2")`,
+		"static char* vbx_inputbox",
+		"#include <stdio.h>",
+		"#include <stdlib.h>",
+		"#include <string.h>",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileFileOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_file_io.vbx")
+	content := []byte(`
+File.Write "sample.txt", "Sample file content"
+Dim filename = "sample2.txt"
+Dim body = "Second file content"
+File.Write(filename, body)
+Dim read1 = File.Read("sample.txt")
+Dim read2 = File.Read(filename)
+Print read1
+Print read2
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		`vbx_file_write("sample.txt", "Sample file content");`,
+		`vbx_file_write(filename, body);`,
+		`vbx_file_read("sample.txt")`,
+		`vbx_file_read(filename)`,
+		"static void vbx_file_write",
+		"static char* vbx_file_read",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestBuildAndRunFileOperations(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "run_file_io.vbx")
+	outFile := filepath.Join(tmpDir, "output_test.txt")
+	// Escape backslashes for path on Windows if needed
+	cleanOutFile := strings.ReplaceAll(outFile, "\\", "/")
+
+	content := []byte(strings.Join([]string{
+		`Dim filePath = "` + cleanOutFile + `"`,
+		`File.Write filePath, "VBX File I/O Success!"`,
+		`Dim readBack = File.Read(filePath)`,
+		`Print "Read content: " + readBack`,
+	}, "\n"))
+
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	err := BuildAndRun(vbxFile)
+	if err != nil {
+		t.Fatalf("BuildAndRun failed: %v", err)
+	}
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("Expected file %s to exist, but got error: %v", outFile, err)
+	}
+
+	if string(data) != "VBX File I/O Success!" {
+		t.Errorf("Expected file content 'VBX File I/O Success!', got: %s", string(data))
+	}
+}
+
+func TestBuildInteractiveAppExample(t *testing.T) {
+	interactiveAppPath := filepath.Join("..", "..", "examples", "interactive_app.vbx")
+	if _, err := os.Stat(interactiveAppPath); os.IsNotExist(err) {
+		t.Skip("examples/interactive_app.vbx not found")
+	}
+
+	tmpDir := t.TempDir()
+	outBin := filepath.Join(tmpDir, "interactive_app_standalone")
+
+	builtPath, err := Build(interactiveAppPath, outBin, false)
+	if err != nil {
+		t.Fatalf("Build interactive_app.vbx failed: %v", err)
+	}
+
+	if _, err := os.Stat(builtPath); os.IsNotExist(err) {
+		t.Fatalf("Expected built interactive_app binary at %s, but file does not exist", builtPath)
+	}
+}

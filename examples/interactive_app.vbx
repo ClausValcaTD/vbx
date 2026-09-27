@@ -1,0 +1,20 @@
+' Interactive App demonstration in Visual Basic X (VBX)
+' Prompts for user input, writes to file, reads back, and presents results.
+
+' 1. Prompt user for input using InputBox
+Dim userName = InputBox("Please enter your name:", "Interactive App Registration")
+
+' 2. Display greeting using MsgBox
+MsgBox "Hello, " + userName + "! Saving your data to file...", "Welcome"
+
+' 3. Save text to a file using File.Write
+Dim logFile = "app_data.txt"
+Dim fileContent = "Registered User: " + userName
+File.Write logFile, fileContent
+
+' 4. Read text back from the file using File.Read
+Dim savedData = File.Read(logFile)
+
+' 5. Present read content using MsgBox and Print
+MsgBox "Read from " + logFile + ": " + savedData, "File I/O Complete"
+Print "File content: " + savedData
