@@ -892,3 +892,120 @@ func TestBuildAndRunStringAndLoopsExample(t *testing.T) {
 		t.Fatalf("BuildAndRun examples/string_and_loops.vbx failed: %v", err)
 	}
 }
+
+func TestTranspileTier1Features(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_tier1.vbx")
+	content := []byte(`
+Const MAX = 5
+Const TITLE = "Demo"
+Dim arr(MAX)
+Dim names[MAX]
+
+For i = 0 To MAX - 1
+    arr(i) = i * 10
+    names[i] = "Name" & i
+Next i
+
+Dim v = Val("42")
+Dim s = Str(100)
+
+While v > 0
+    If v == 40 Then
+        Exit While
+    End If
+    v = v - 1
+Wend
+
+Print TITLE
+Print arr(2)
+Print names[1]
+Print v
+Print s
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"const long long MAX = 5LL;",
+		`const char* TITLE = "Demo";`,
+		"long long arr[MAX]; memset(arr, 0, sizeof(arr));",
+		"const char* names[MAX]; memset(names, 0, sizeof(names));",
+		"arr[i] = (i * 10LL);",
+		`names[i] = vbx_concat("Name", vbx_int_to_str(i));`,
+		`long long v = vbx_val("42");`,
+		"const char* s = vbx_int_to_str(100LL);",
+		"break;",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
+
+func TestTranspileTier1Errors(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "Exit For outside loop",
+			content: "Exit For",
+		},
+		{
+			name:    "Exit While outside loop",
+			content: "Exit While",
+		},
+		{
+			name:    "Exit For inside While loop",
+			content: "While 1 == 1\nExit For\nWend",
+		},
+		{
+			name:    "Exit While inside For loop",
+			content: "For i = 1 To 5\nExit While\nNext i",
+		},
+		{
+			name:    "Reassign to Const",
+			content: "Const PI = 3.14\nPI = 3.14159",
+		},
+		{
+			name:    "Reassign array name directly",
+			content: "Dim arr(5)\narr = 10",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			vbxFile := filepath.Join(tmpDir, "err.vbx")
+			if err := os.WriteFile(vbxFile, []byte(tt.content), 0644); err != nil {
+				t.Fatalf("Failed to write temp vbx file: %v", err)
+			}
+
+			_, err := Transpile(vbxFile)
+			if err == nil {
+				t.Errorf("Expected transpile error for %q, got nil", tt.name)
+			}
+		})
+	}
+}
+
+func TestBuildAndRunTier1Example(t *testing.T) {
+	examplePath := filepath.Join("..", "..", "examples", "tier1_features.vbx")
+	if _, err := os.Stat(examplePath); os.IsNotExist(err) {
+		t.Skip("examples/tier1_features.vbx not found")
+	}
+
+	err := BuildAndRun(examplePath)
+	if err != nil {
+		t.Fatalf("BuildAndRun examples/tier1_features.vbx failed: %v", err)
+	}
+}
