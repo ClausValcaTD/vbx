@@ -986,15 +986,22 @@ const (
 	blockElse
 	blockWhile
 	blockFor
+	blockDo
+	blockSelect
 	blockSub
 	blockFunction
 )
 
 type blockInfo struct {
-	kind    blockKind
-	forVar  string
-	lineNum int
-	source  string
+	kind           blockKind
+	forVar         string
+	lineNum        int
+	source         string
+	isDoUntil      bool
+	selectExprC    string
+	selectExprType DataType
+	caseCount      int
+	hasCaseElse    bool
 }
 
 func splitCommaArgs(raw string) ([]string, error) {
@@ -1096,6 +1103,15 @@ func Transpile(vbxPath string) (string, error) {
 	elseIfRegex := regexp.MustCompile("(?i)^\\s*ElseIf\\s+(.+)\\s+Then\\s*$")
 	whileRegex := regexp.MustCompile("(?i)^\\s*While\\s+(.+)\\s*$")
 	wendRegex := regexp.MustCompile("(?i)^\\s*Wend\\s*$")
+	doWhileRegex := regexp.MustCompile("(?i)^\\s*Do\\s+While\\s+(.+)$")
+	doRegex := regexp.MustCompile("(?i)^\\s*Do\\s*$")
+	loopWhileRegex := regexp.MustCompile("(?i)^\\s*Loop\\s+While\\s+(.+)$")
+	loopRegex := regexp.MustCompile("(?i)^\\s*Loop\\s*$")
+	exitDoRegex := regexp.MustCompile("(?i)^\\s*Exit\\s+Do\\s*$")
+	selectCaseRegex := regexp.MustCompile("(?i)^\\s*Select\\s+Case\\s+(.+)$")
+	caseRegex := regexp.MustCompile("(?i)^\\s*Case\\s+(.+)$")
+	caseElseRegex := regexp.MustCompile("(?i)^\\s*Case\\s+Else\\s*$")
+	endSelectRegex := regexp.MustCompile("(?i)^\\s*End\\s+Select\\s*$")
 	elseRegex := regexp.MustCompile("(?i)^\\s*Else\\s*$")
 	endIfRegex := regexp.MustCompile("(?i)^\\s*End\\s+If\\s*$")
 	forRegex := regexp.MustCompile("(?i)^\\s*For\\s+([a-zA-Z_][a-zA-Z0-9_]*)\\s*=\\s*(.+)\\s+To\\s+(.+)\\s*$")
@@ -1598,6 +1614,226 @@ func Transpile(vbxPath string) (string, error) {
 				blockStack = blockStack[:len(blockStack)-1]
 				outerIndent := strings.Repeat("    ", len(blockStack))
 				stmts = append(stmts, fmt.Sprintf("%s}", outerIndent))
+			} else if matches := doWhileRegex.FindStringSubmatch(line); len(matches) > 1 {
+				condStr := matches[1]
+				condNode, err := parseExprWithFunctions(condStr, knownFunctions)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid condition in Do While statement: %v", err))
+				}
+				_, err = condNode.ExprType(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if err := validateCalls(condNode); err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				cCond, err := condNode.ToC(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
+					needsConcatHelper = true
+					needsStdio = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "vbx_val") {
+					needsValHelper = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "strcmp") {
+					needsString = true
+				}
+				stmts = append(stmts, fmt.Sprintf("%swhile (%s) {", indent, cCond))
+				blockStack = append(blockStack, blockInfo{kind: blockDo, isDoUntil: false, lineNum: lineNum, source: line})
+			} else if doRegex.MatchString(line) {
+				stmts = append(stmts, fmt.Sprintf("%sdo {", indent))
+				blockStack = append(blockStack, blockInfo{kind: blockDo, isDoUntil: true, lineNum: lineNum, source: line})
+			} else if matches := loopWhileRegex.FindStringSubmatch(line); len(matches) > 1 {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockDo || !blockStack[len(blockStack)-1].isDoUntil {
+					return nil, vbxError(lineNum, line, "Loop While without matching Do")
+				}
+				blockStack = blockStack[:len(blockStack)-1]
+				outerIndent := strings.Repeat("    ", len(blockStack))
+				condStr := matches[1]
+				condNode, err := parseExprWithFunctions(condStr, knownFunctions)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid condition in Loop While statement: %v", err))
+				}
+				_, err = condNode.ExprType(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if err := validateCalls(condNode); err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				cCond, err := condNode.ToC(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if strings.Contains(cCond, "vbx_concat") || strings.Contains(cCond, "vbx_") {
+					needsConcatHelper = true
+					needsStdio = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "vbx_val") {
+					needsValHelper = true
+					needsStdlib = true
+				}
+				if strings.Contains(cCond, "strcmp") {
+					needsString = true
+				}
+				stmts = append(stmts, fmt.Sprintf("%s} while (%s);", outerIndent, cCond))
+			} else if loopRegex.MatchString(line) {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockDo || blockStack[len(blockStack)-1].isDoUntil {
+					return nil, vbxError(lineNum, line, "Loop without matching Do While")
+				}
+				blockStack = blockStack[:len(blockStack)-1]
+				outerIndent := strings.Repeat("    ", len(blockStack))
+				stmts = append(stmts, fmt.Sprintf("%s}", outerIndent))
+			} else if exitDoRegex.MatchString(line) {
+				inDo := false
+				for i := len(blockStack) - 1; i >= 0; i-- {
+					if blockStack[i].kind == blockFor || blockStack[i].kind == blockWhile {
+						break
+					}
+					if blockStack[i].kind == blockDo {
+						inDo = true
+						break
+					}
+				}
+				if !inDo {
+					return nil, vbxError(lineNum, line, "Exit Do outside of Do loop")
+				}
+				stmts = append(stmts, fmt.Sprintf("%sbreak;", indent))
+			} else if matches := selectCaseRegex.FindStringSubmatch(line); len(matches) > 1 {
+				exprStr := matches[1]
+				exprNode, err := parseExprWithFunctions(exprStr, knownFunctions)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid expression in Select Case: %v", err))
+				}
+				dt, err := exprNode.ExprType(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if err := validateCalls(exprNode); err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				cExpr, err := exprNode.ToC(localEnv)
+				if err != nil {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+				}
+				if strings.Contains(cExpr, "vbx_concat") || strings.Contains(cExpr, "vbx_") {
+					needsConcatHelper = true
+					needsStdio = true
+					needsStdlib = true
+				}
+				if strings.Contains(cExpr, "vbx_val") {
+					needsValHelper = true
+					needsStdlib = true
+				}
+				if strings.Contains(cExpr, "strcmp") {
+					needsString = true
+				}
+				blockStack = append(blockStack, blockInfo{
+					kind:           blockSelect,
+					lineNum:        lineNum,
+					source:         line,
+					selectExprC:    cExpr,
+					selectExprType: dt,
+					caseCount:      0,
+					hasCaseElse:    false,
+				})
+			} else if caseElseRegex.MatchString(line) {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockSelect {
+					return nil, vbxError(lineNum, line, "Case Else outside of Select Case")
+				}
+				topBlock := &blockStack[len(blockStack)-1]
+				if topBlock.hasCaseElse {
+					return nil, vbxError(lineNum, line, "multiple Case Else statements in Select Case")
+				}
+				topBlock.hasCaseElse = true
+				outerIndent := strings.Repeat("    ", len(blockStack)-1)
+				if topBlock.caseCount == 0 {
+					stmts = append(stmts, fmt.Sprintf("%sif (1) {", outerIndent))
+				} else {
+					stmts = append(stmts, fmt.Sprintf("%s} else {", outerIndent))
+				}
+			} else if matches := caseRegex.FindStringSubmatch(line); len(matches) > 1 {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockSelect {
+					return nil, vbxError(lineNum, line, "Case outside of Select Case")
+				}
+				topBlock := &blockStack[len(blockStack)-1]
+				if topBlock.hasCaseElse {
+					return nil, vbxError(lineNum, line, "Case statement after Case Else")
+				}
+				rawVals := matches[1]
+				valStrs, err := splitCommaArgs(rawVals)
+				if err != nil || len(valStrs) == 0 {
+					return nil, vbxError(lineNum, line, fmt.Sprintf("invalid Case values: %v", err))
+				}
+				var condParts []string
+				for _, valStr := range valStrs {
+					valNode, err := parseExprWithFunctions(valStr, knownFunctions)
+					if err != nil {
+						return nil, vbxError(lineNum, line, fmt.Sprintf("invalid Case value expression: %v", err))
+					}
+					valType, err := valNode.ExprType(localEnv)
+					if err != nil {
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+					}
+					if err := validateCalls(valNode); err != nil {
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+					}
+					cVal, err := valNode.ToC(localEnv)
+					if err != nil {
+						return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+					}
+					if strings.Contains(cVal, "vbx_concat") || strings.Contains(cVal, "vbx_") {
+						needsConcatHelper = true
+						needsStdio = true
+						needsStdlib = true
+					}
+					if strings.Contains(cVal, "vbx_val") {
+						needsValHelper = true
+						needsStdlib = true
+					}
+					if strings.Contains(cVal, "strcmp") {
+						needsString = true
+					}
+
+					if topBlock.selectExprType == TypeString || valType == TypeString {
+						leftC, err := formatStringArg(valNode, localEnv)
+						if err != nil {
+							return nil, vbxError(lineNum, line, fmt.Sprintf("%v", err))
+						}
+						needsString = true
+						condParts = append(condParts, fmt.Sprintf("(strcmp(%s, %s) == 0)", topBlock.selectExprC, leftC))
+					} else {
+						condParts = append(condParts, fmt.Sprintf("(%s == %s)", topBlock.selectExprC, cVal))
+					}
+				}
+				fullCond := strings.Join(condParts, " || ")
+				if len(condParts) > 1 {
+					fullCond = fmt.Sprintf("(%s)", fullCond)
+				}
+
+				outerIndent := strings.Repeat("    ", len(blockStack)-1)
+				if topBlock.caseCount == 0 {
+					stmts = append(stmts, fmt.Sprintf("%sif (%s) {", outerIndent, fullCond))
+				} else {
+					stmts = append(stmts, fmt.Sprintf("%s} else if (%s) {", outerIndent, fullCond))
+				}
+				topBlock.caseCount++
+			} else if endSelectRegex.MatchString(line) {
+				if len(blockStack) == 0 || blockStack[len(blockStack)-1].kind != blockSelect {
+					return nil, vbxError(lineNum, line, "End Select without matching Select Case")
+				}
+				topBlock := blockStack[len(blockStack)-1]
+				blockStack = blockStack[:len(blockStack)-1]
+				if topBlock.caseCount > 0 || topBlock.hasCaseElse {
+					outerIndent := strings.Repeat("    ", len(blockStack))
+					stmts = append(stmts, fmt.Sprintf("%s}", outerIndent))
+				}
 			} else if matches := forRegex.FindStringSubmatch(line); len(matches) > 3 {
 				varName := matches[1]
 				startExprStr := matches[2]
@@ -2304,6 +2540,10 @@ func Transpile(vbxPath string) (string, error) {
 				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed If block")
 			case blockFor:
 				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed For block")
+			case blockDo:
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed Do block")
+			case blockSelect:
+				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed Select Case block")
 			default:
 				return nil, vbxError(topBlock.lineNum, topBlock.source, "unclosed control flow block")
 			}
