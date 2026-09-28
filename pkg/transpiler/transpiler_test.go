@@ -1403,11 +1403,11 @@ func TestMathStdlibTranspileAndRun(t *testing.T) {
 			t.Errorf("Expected llabs and fabs in generated code:\n%s", cCode)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1426,11 +1426,11 @@ func TestMathStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1463,11 +1463,11 @@ func TestMathStdlibTranspileAndRun(t *testing.T) {
 			t.Errorf("Expected srand call in main, got:\n%s", cCode)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1489,7 +1489,7 @@ func TestMathStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		_, err := Build(vbxFile, "", false)
+		_, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build with Sqr (using -lm) failed: %v", err)
 		}
@@ -1503,11 +1503,11 @@ func TestMathStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1527,11 +1527,11 @@ func TestStringStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1559,11 +1559,11 @@ func TestStringStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1588,11 +1588,11 @@ func TestStringStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
@@ -1617,11 +1617,11 @@ func TestStringStdlibTranspileAndRun(t *testing.T) {
 			t.Fatalf("WriteFile failed: %v", err)
 		}
 
-		binPath, err := Build(vbxFile, "", false)
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
 		if err != nil {
 			t.Fatalf("Build failed: %v", err)
 		}
-		cmd := exec.Command("./" + binPath)
+		cmd := exec.Command(binPath)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("Execution failed: %v", err)
