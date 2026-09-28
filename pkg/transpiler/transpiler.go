@@ -145,8 +145,17 @@ func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
 	if c.Name == "InputBox" || c.Name == "File.Read" || c.Name == "UCase" || c.Name == "LCase" || c.Name == "Left" || c.Name == "Right" || c.Name == "Mid" || c.Name == "Trim" || c.Name == "Replace" || c.Name == "Str" {
 		return TypeString, nil
 	}
-	if c.Name == "Len" {
+	if c.Name == "Len" || c.Name == "InStr" {
 		return TypeInt, nil
+	}
+	if c.Name == "Sqr" || c.Name == "Rnd" {
+		return TypeDouble, nil
+	}
+	if c.Name == "Abs" {
+		if len(c.Args) != 1 {
+			return TypeUnknown, fmt.Errorf("Abs requires 1 argument, got %d", len(c.Args))
+		}
+		return c.Args[0].ExprType(env)
 	}
 	if c.Name == "Val" {
 		if len(c.Args) == 1 {
@@ -167,6 +176,55 @@ func (c *CallNode) ExprType(env map[string]DataType) (DataType, error) {
 }
 
 func (c *CallNode) ToC(env map[string]DataType) (string, error) {
+	if c.Name == "Abs" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("Abs requires 1 argument, got %d", len(c.Args))
+		}
+		arg0Type, err := c.Args[0].ExprType(env)
+		if err != nil {
+			return "", err
+		}
+		arg0C, err := c.Args[0].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		if arg0Type == TypeInt {
+			return fmt.Sprintf("llabs(%s)", arg0C), nil
+		} else if arg0Type == TypeDouble {
+			return fmt.Sprintf("fabs(%s)", arg0C), nil
+		}
+		return "", fmt.Errorf("Abs requires a numeric argument, got %s", arg0Type)
+	}
+	if c.Name == "Sqr" {
+		if len(c.Args) != 1 {
+			return "", fmt.Errorf("Sqr requires 1 argument, got %d", len(c.Args))
+		}
+		arg0C, err := c.Args[0].ToC(env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("sqrt((double)(%s))", arg0C), nil
+	}
+	if c.Name == "Rnd" {
+		if len(c.Args) != 0 {
+			return "", fmt.Errorf("Rnd requires 0 arguments, got %d", len(c.Args))
+		}
+		return "((double)rand()/(double)RAND_MAX)", nil
+	}
+	if c.Name == "InStr" {
+		if len(c.Args) != 2 {
+			return "", fmt.Errorf("InStr requires 2 arguments, got %d", len(c.Args))
+		}
+		arg0C, err := formatStringArg(c.Args[0], env)
+		if err != nil {
+			return "", err
+		}
+		arg1C, err := formatStringArg(c.Args[1], env)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("vbx_instr(%s, %s)", arg0C, arg1C), nil
+	}
 	if c.Name == "Val" {
 		if len(c.Args) != 1 {
 			return "", fmt.Errorf("Val requires 1 argument, got %d", len(c.Args))
@@ -288,34 +346,6 @@ func (c *CallNode) ToC(env map[string]DataType) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("vbx_mid(%s, %s, %s)", arg0C, arg1C, arg2C), nil
-	}
-	if c.Name == "Trim" {
-		if len(c.Args) != 1 {
-			return "", fmt.Errorf("Trim requires 1 argument, got %d", len(c.Args))
-		}
-		arg0C, err := formatStringArg(c.Args[0], env)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("vbx_trim(%s)", arg0C), nil
-	}
-	if c.Name == "Replace" {
-		if len(c.Args) != 3 {
-			return "", fmt.Errorf("Replace requires 3 arguments, got %d", len(c.Args))
-		}
-		arg0C, err := formatStringArg(c.Args[0], env)
-		if err != nil {
-			return "", err
-		}
-		arg1C, err := formatStringArg(c.Args[1], env)
-		if err != nil {
-			return "", err
-		}
-		arg2C, err := formatStringArg(c.Args[2], env)
-		if err != nil {
-			return "", err
-		}
-		return fmt.Sprintf("vbx_replace(%s, %s, %s)", arg0C, arg1C, arg2C), nil
 	}
 	if c.Name == "Trim" {
 		if len(c.Args) != 1 {
@@ -829,6 +859,23 @@ func (p *exprParser) parseMultiplication() (ExprNode, error) {
 	return left, nil
 }
 
+type UnaryNode struct {
+	Op   string
+	Expr ExprNode
+}
+
+func (u *UnaryNode) ExprType(env map[string]DataType) (DataType, error) {
+	return u.Expr.ExprType(env)
+}
+
+func (u *UnaryNode) ToC(env map[string]DataType) (string, error) {
+	cExpr, err := u.Expr.ToC(env)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("(-%s)", cExpr), nil
+}
+
 func (p *exprParser) parsePrimary() (ExprNode, error) {
 	if p.pos >= len(p.tokens) {
 		return nil, fmt.Errorf("unexpected end of expression")
@@ -836,6 +883,14 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 
 	tok := p.tokens[p.pos]
 	p.pos++
+
+	if tok.Type == TokOp && tok.Val == "-" {
+		expr, err := p.parsePrimary()
+		if err != nil {
+			return nil, err
+		}
+		return &UnaryNode{Op: "-", Expr: expr}, nil
+	}
 
 	switch tok.Type {
 	case TokNumber:
@@ -883,7 +938,7 @@ func (p *exprParser) parsePrimary() (ExprNode, error) {
 				isFn = true
 			} else {
 				switch ident {
-				case "InputBox", "File.Read", "Len", "UCase", "LCase", "Left", "Right", "Mid", "Trim", "Replace", "Val", "Str":
+				case "InputBox", "File.Read", "Len", "UCase", "LCase", "Left", "Right", "Mid", "Trim", "Replace", "Val", "Str", "Abs", "Sqr", "Rnd", "InStr":
 					isFn = true
 				}
 			}
@@ -1249,10 +1304,12 @@ func Transpile(vbxPath string) (string, error) {
 	globalEnv["Mid"] = TypeString
 	globalEnv["Trim"] = TypeString
 	globalEnv["Replace"] = TypeString
-	globalEnv["Trim"] = TypeString
-	globalEnv["Replace"] = TypeString
 	globalEnv["Val"] = TypeInt
 	globalEnv["Str"] = TypeString
+	globalEnv["Abs"] = TypeInt
+	globalEnv["Sqr"] = TypeDouble
+	globalEnv["Rnd"] = TypeDouble
+	globalEnv["InStr"] = TypeInt
 	for _, fn := range functions {
 		globalEnv[fn.Name] = fn.ReturnType
 	}
@@ -1304,6 +1361,8 @@ func Transpile(vbxPath string) (string, error) {
 					} else if bin, ok := n.(*BinaryNode); ok {
 						inspectNode(bin.Left)
 						inspectNode(bin.Right)
+					} else if un, ok := n.(*UnaryNode); ok {
+						inspectNode(un.Expr)
 					}
 				}
 				inspectNode(exprNode)
@@ -1370,6 +1429,11 @@ func Transpile(vbxPath string) (string, error) {
 	needsInputBox := false
 	needsFileRead := false
 	needsFileWrite := false
+	needsMath := false
+	needsTime := false
+	needsInStr := false
+	needsTrim := false
+	needsReplace := false
 
 	transpileBlock := func(bodyLines []LineInfo, localEnv map[string]DataType, isSub bool, isFunc bool) ([]string, error) {
 		var stmts []string
@@ -1390,11 +1454,15 @@ func Transpile(vbxPath string) (string, error) {
 						if len(call.Args) != 1 {
 							return fmt.Errorf("type error: File.Read expected 1 argument, got %d", len(call.Args))
 						}
-					case "Len", "UCase", "LCase", "Trim", "Val", "Str":
+					case "Len", "UCase", "LCase", "Trim", "Val", "Str", "Abs", "Sqr":
 						if len(call.Args) != 1 {
 							return fmt.Errorf("type error: %s expected 1 argument, got %d", call.Name, len(call.Args))
 						}
-					case "Left", "Right":
+					case "Rnd":
+						if len(call.Args) != 0 {
+							return fmt.Errorf("type error: Rnd expected 0 arguments, got %d", len(call.Args))
+						}
+					case "Left", "Right", "InStr":
 						if len(call.Args) != 2 {
 							return fmt.Errorf("type error: %s expected 2 arguments, got %d", call.Name, len(call.Args))
 						}
@@ -1427,6 +1495,10 @@ func Transpile(vbxPath string) (string, error) {
 				}
 			} else if idx, ok := n.(*IndexNode); ok {
 				if err := validateCalls(idx.Index); err != nil {
+					return err
+				}
+			} else if un, ok := n.(*UnaryNode); ok {
+				if err := validateCalls(un.Expr); err != nil {
 					return err
 				}
 			}
@@ -2615,8 +2687,31 @@ func Transpile(vbxPath string) (string, error) {
 		needsString = true
 		needsStdlib = true
 	}
+	if needsTrim || needsReplace {
+		needsConcatHelper = true
+	}
 	if strings.Contains(fullBodyCode, "strlen") {
 		needsString = true
+	}
+	if strings.Contains(fullBodyCode, "sqrt(") || strings.Contains(fullBodyCode, "fabs(") {
+		needsMath = true
+	}
+	if strings.Contains(fullBodyCode, "llabs(") {
+		needsStdlib = true
+	}
+	if strings.Contains(fullBodyCode, "rand()") || strings.Contains(fullBodyCode, "srand(") {
+		needsTime = true
+		needsStdlib = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_instr") {
+		needsInStr = true
+		needsString = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_trim") {
+		needsTrim = true
+	}
+	if strings.Contains(fullBodyCode, "vbx_replace") {
+		needsReplace = true
 	}
 
 	var sb strings.Builder
@@ -2629,13 +2724,19 @@ func Transpile(vbxPath string) (string, error) {
 	if needsStdio || needsInputBox || needsFileRead || needsFileWrite {
 		sb.WriteString("#include <stdio.h>\n")
 	}
-	if needsStdlib || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers || needsValHelper {
+	if needsStdlib || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers || needsValHelper || needsTime {
 		sb.WriteString("#include <stdlib.h>\n")
 	}
-	if needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers {
+	if needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsStringHelpers || needsInStr {
 		sb.WriteString("#include <string.h>\n")
 	}
-	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsCtype || needsStringHelpers || needsValHelper {
+	if needsMath {
+		sb.WriteString("#include <math.h>\n")
+	}
+	if needsTime {
+		sb.WriteString("#include <time.h>\n")
+	}
+	if needsStdio || needsStdlib || needsString || needsConcatHelper || needsMsgBox || needsInputBox || needsFileRead || needsFileWrite || needsCtype || needsStringHelpers || needsValHelper || needsMath || needsTime {
 		sb.WriteString("\n")
 	}
 
@@ -2794,6 +2895,14 @@ func Transpile(vbxPath string) (string, error) {
 		sb.WriteString("static long long vbx_val(const char* s) {\n")
 		sb.WriteString("    if (!s) return 0;\n")
 		sb.WriteString("    return atoll(s);\n")
+		sb.WriteString("}\n\n")
+	}
+
+	if needsInStr {
+		sb.WriteString("static long long vbx_instr(const char* str, const char* target) {\n")
+		sb.WriteString("    const char* found = strstr(str, target);\n")
+		sb.WriteString("    if (!found) return 0LL;\n")
+		sb.WriteString("    return (long long)(found - str) + 1LL;\n")
 		sb.WriteString("}\n\n")
 	}
 
@@ -2986,6 +3095,9 @@ func Transpile(vbxPath string) (string, error) {
 	}
 
 	sb.WriteString("int main(void) {\n")
+	if needsTime {
+		sb.WriteString("    srand((unsigned)time(NULL));\n")
+	}
 	for _, stmt := range mainStmts {
 		sb.WriteString(stmt)
 		sb.WriteString("\n")
@@ -3035,7 +3147,11 @@ func BuildAndRun(vbxPath string) error {
 	}
 	execPath := filepath.Join(buildDir, "temp"+execExt)
 
-	cmdCompile := exec.Command(compiler, cFilePath, "-o", execPath)
+	compileArgs := []string{cFilePath, "-o", execPath}
+	if strings.Contains(cCode, "sqrt(") || strings.Contains(cCode, "fabs(") {
+		compileArgs = append(compileArgs, "-lm")
+	}
+	cmdCompile := exec.Command(compiler, compileArgs...)
 	cmdCompile.Stdout = os.Stdout
 	cmdCompile.Stderr = os.Stderr
 	if err := cmdCompile.Run(); err != nil {
@@ -3112,7 +3228,11 @@ func Build(vbxPath string, outputPath string, keepC bool) (string, error) {
 		return "", fmt.Errorf("failed to write C source file: %w", err)
 	}
 
-	cmdCompile := exec.Command(compiler, "-O2", cFilePath, "-o", outBinaryPath)
+	compileArgs := []string{"-O2", cFilePath, "-o", outBinaryPath}
+	if strings.Contains(cCode, "sqrt(") || strings.Contains(cCode, "fabs(") {
+		compileArgs = append(compileArgs, "-lm")
+	}
+	cmdCompile := exec.Command(compiler, compileArgs...)
 	cmdCompile.Stdout = os.Stdout
 	cmdCompile.Stderr = os.Stderr
 	if err := cmdCompile.Run(); err != nil {

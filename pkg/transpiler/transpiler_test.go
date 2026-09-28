@@ -1,6 +1,7 @@
 package transpiler
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1381,6 +1382,262 @@ func TestTranspileSelectCase(t *testing.T) {
 		}
 		if !strings.Contains(cCode, "if ((flag == 1LL)) {") || !strings.Contains(cCode, "if ((val == 2LL)) {") {
 			t.Errorf("Unexpected C code for nested Select Case inside If:\n%s", cCode)
+		}
+	})
+}
+
+func TestMathStdlibTranspileAndRun(t *testing.T) {
+	t.Run("Abs int, float, positive", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_abs.vbx")
+		content := []byte("Dim i = Abs(-5)\nDim f = Abs(-3.14)\nDim p = Abs(5)\nPrint i\nPrint f\nPrint p\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "llabs(") || !strings.Contains(cCode, "fabs(") {
+			t.Errorf("Expected llabs and fabs in generated code:\n%s", cCode)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		outStr := string(out)
+		if !strings.Contains(outStr, "5") || !strings.Contains(outStr, "3.14") {
+			t.Errorf("Unexpected output: %s", outStr)
+		}
+	})
+
+	t.Run("Sqr 16.0 and 2.0", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_sqr.vbx")
+		content := []byte("Dim a = Sqr(16.0)\nDim b = Sqr(2.0)\nPrint a\nPrint b\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		outStr := string(out)
+		if !strings.Contains(outStr, "4.0") && !strings.Contains(outStr, "4.000000") {
+			t.Errorf("Expected Sqr(16.0) to output 4.0, got: %s", outStr)
+		}
+		if !strings.Contains(outStr, "1.41") {
+			t.Errorf("Expected Sqr(2.0) output to contain 1.41, got: %s", outStr)
+		}
+	})
+
+	t.Run("Rnd result between 0.0 and 1.0", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_rnd.vbx")
+		content := []byte("Dim r = Rnd()\nPrint r\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "#include <time.h>") {
+			t.Errorf("Expected #include <time.h> for Rnd(), got:\n%s", cCode)
+		}
+		if !strings.Contains(cCode, "srand((unsigned)time(NULL));") {
+			t.Errorf("Expected srand call in main, got:\n%s", cCode)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		var val float64
+		if _, err := fmt.Sscanf(strings.TrimSpace(string(out)), "%f", &val); err != nil {
+			t.Fatalf("Failed to parse Rnd output float: %v, out: %s", err, string(out))
+		}
+		if val < 0.0 || val > 1.0 {
+			t.Errorf("Expected Rnd value between 0.0 and 1.0, got: %f", val)
+		}
+	})
+
+	t.Run("-lm flag added to Build when Sqr used", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_lm.vbx")
+		content := []byte("Dim x = Sqr(9.0)\nPrint x\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		_, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build with Sqr (using -lm) failed: %v", err)
+		}
+	})
+
+	t.Run("Abs and Sqr in same program", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_abs_sqr.vbx")
+		content := []byte("Dim a = Abs(-25.0)\nDim s = Sqr(a)\nPrint s\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		if !strings.Contains(string(out), "5.0") {
+			t.Errorf("Expected 5.0, got: %s", string(out))
+		}
+	})
+}
+
+func TestStringStdlibTranspileAndRun(t *testing.T) {
+	t.Run("InStr test cases", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_instr.vbx")
+		content := []byte("Dim pos1 = InStr(\"Hello World\", \"World\")\nDim pos2 = InStr(\"Hello World\", \"xyz\")\nDim pos3 = InStr(\"\", \"x\")\nPrint pos1\nPrint pos2\nPrint pos3\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) < 3 {
+			t.Fatalf("Expected 3 lines, got: %v", lines)
+		}
+		if strings.TrimSpace(lines[0]) != "7" {
+			t.Errorf("Expected pos1 = 7, got %s", lines[0])
+		}
+		if strings.TrimSpace(lines[1]) != "0" {
+			t.Errorf("Expected pos2 = 0, got %s", lines[1])
+		}
+		if strings.TrimSpace(lines[2]) != "0" {
+			t.Errorf("Expected pos3 = 0, got %s", lines[2])
+		}
+	})
+
+	t.Run("Trim test cases", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_trim.vbx")
+		content := []byte("Dim t1 = Trim(\"  hello  \")\nDim t2 = Trim(\"no spaces\")\nPrint \"[\" & t1 & \"]\"\nPrint \"[\" & t2 & \"]\"\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("Expected 2 lines, got: %v", lines)
+		}
+		if strings.TrimSpace(lines[0]) != "[hello]" {
+			t.Errorf("Expected [hello], got %s", lines[0])
+		}
+		if strings.TrimSpace(lines[1]) != "[no spaces]" {
+			t.Errorf("Expected [no spaces], got %s", lines[1])
+		}
+	})
+
+	t.Run("Replace test cases", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_replace.vbx")
+		content := []byte("Dim r1 = Replace(\"aabbcc\", \"bb\", \"XX\")\nDim r2 = Replace(\"hello\", \"x\", \"y\")\nPrint r1\nPrint r2\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) < 2 {
+			t.Fatalf("Expected 2 lines, got: %v", lines)
+		}
+		if strings.TrimSpace(lines[0]) != "aaXXcc" {
+			t.Errorf("Expected aaXXcc, got %s", lines[0])
+		}
+		if strings.TrimSpace(lines[1]) != "hello" {
+			t.Errorf("Expected hello, got %s", lines[1])
+		}
+	})
+
+	t.Run("All three string functions in one program", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "test_all_string.vbx")
+		content := []byte("Dim raw = \"  hello world  \"\nDim trimmed = Trim(raw)\nDim pos = InStr(trimmed, \"world\")\nDim replaced = Replace(trimmed, \"world\", \"VBX\")\nPrint trimmed\nPrint pos\nPrint replaced\n")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("WriteFile failed: %v", err)
+		}
+
+		binPath, err := Build(vbxFile, filepath.Join(tmpDir, "out_bin"), false)
+		if err != nil {
+			t.Fatalf("Build failed: %v", err)
+		}
+		cmd := exec.Command(binPath)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("Execution failed: %v", err)
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		if len(lines) < 3 {
+			t.Fatalf("Expected 3 lines, got: %v", lines)
+		}
+		if strings.TrimSpace(lines[0]) != "hello world" {
+			t.Errorf("Expected 'hello world', got %s", lines[0])
+		}
+		if strings.TrimSpace(lines[1]) != "7" {
+			t.Errorf("Expected pos = 7, got %s", lines[1])
+		}
+		if strings.TrimSpace(lines[2]) != "hello VBX" {
+			t.Errorf("Expected 'hello VBX', got %s", lines[2])
 		}
 	})
 }
