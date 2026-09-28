@@ -1163,3 +1163,224 @@ func TestErrorFormattingLineNumbersAndPreview(t *testing.T) {
 		}
 	})
 }
+
+
+func TestTranspileDoLoop(t *testing.T) {
+	t.Run("Do While transpiles to while() {}", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "do_while.vbx")
+		content := []byte("Dim x = 5\nDo While x > 0\nx = x - 1\nLoop")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		expected := "while ((x > 0LL)) {"
+		if !strings.Contains(cCode, expected) {
+			t.Errorf("Expected snippet %q in C code, got:\n%s", expected, cCode)
+		}
+	})
+
+	t.Run("Do...Loop While transpiles to do {} while()", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "loop_while.vbx")
+		content := []byte("Dim x = 5\nDo\nx = x - 1\nLoop While x > 0")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		expectedDo := "do {"
+		expectedLoop := "} while ((x > 0LL));"
+		if !strings.Contains(cCode, expectedDo) || !strings.Contains(cCode, expectedLoop) {
+			t.Errorf("Expected snippets %q and %q in C code, got:\n%s", expectedDo, expectedLoop, cCode)
+		}
+	})
+
+	t.Run("Exit Do transpiles to break", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "exit_do.vbx")
+		content := []byte("Dim x = 5\nDo While x > 0\nIf x == 3 Then\nExit Do\nEnd If\nx = x - 1\nLoop")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "break;") {
+			t.Errorf("Expected break; in C code, got:\n%s", cCode)
+		}
+	})
+
+	t.Run("Exit Do outside loop -> error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "exit_do_err.vbx")
+		content := []byte("Dim x = 5\nExit Do")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error for Exit Do outside loop, got nil")
+		}
+	})
+
+	t.Run("Exit Do inside For -> error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "exit_do_for.vbx")
+		content := []byte("For i = 1 To 5\nExit Do\nNext i")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error for Exit Do inside For, got nil")
+		}
+	})
+
+	t.Run("Unclosed Do -> error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "unclosed_do.vbx")
+		content := []byte("Do While 1 == 1\nPrint 1")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error for unclosed Do, got nil")
+		}
+		if !strings.Contains(err.Error(), "unclosed Do block") {
+			t.Errorf("Expected \"unclosed Do block\" error, got: %v", err)
+		}
+	})
+}
+
+func TestTranspileSelectCase(t *testing.T) {
+	t.Run("Select Case integer - single value per Case", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_int.vbx")
+		content := []byte("Dim x = 2\nSelect Case x\nCase 1\nPrint \"One\"\nCase 2\nPrint \"Two\"\nEnd Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "if ((x == 1LL)) {") || !strings.Contains(cCode, "} else if ((x == 2LL)) {") {
+			t.Errorf("Unexpected C code generated:\n%s", cCode)
+		}
+	})
+
+	t.Run("Select Case string - uses strcmp", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_str.vbx")
+		content := []byte("Dim name = \"Alice\"\nSelect Case name\nCase \"Alice\"\nPrint 1\nCase \"Bob\"\nPrint 2\nEnd Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "strcmp(name, \"Alice\")") || !strings.Contains(cCode, "strcmp(name, \"Bob\")") {
+			t.Errorf("Expected strcmp in C code, got:\n%s", cCode)
+		}
+	})
+
+	t.Run("Select Case multi-value: Case 1, 2, 3", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_multi.vbx")
+		content := []byte("Dim x = 2\nSelect Case x\nCase 1, 2, 3\nPrint \"Low\"\nEnd Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		expected := "if (((x == 1LL) || (x == 2LL) || (x == 3LL))) {"
+		if !strings.Contains(cCode, expected) {
+			t.Errorf("Expected multi-value condition %q, got:\n%s", expected, cCode)
+		}
+	})
+
+	t.Run("Case Else present", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_else.vbx")
+		content := []byte("Dim x = 10\nSelect Case x\nCase 1\nPrint 1\nCase Else\nPrint 0\nEnd Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "} else {") {
+			t.Errorf("Expected } else { in C code, got:\n%s", cCode)
+		}
+	})
+
+	t.Run("Case Else absent", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_no_else.vbx")
+		content := []byte("Dim x = 10\nSelect Case x\nCase 1\nPrint 1\nEnd Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if strings.Contains(cCode, "else {") {
+			t.Errorf("Did not expect else { in C code when Case Else is absent, got:\n%s", cCode)
+		}
+	})
+
+	t.Run("Case outside Select -> error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "case_err.vbx")
+		content := []byte("Case 1\nPrint 1")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error for Case outside Select, got nil")
+		}
+	})
+
+	t.Run("End Select without Select -> error", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "end_select_err.vbx")
+		content := []byte("End Select")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		_, err := Transpile(vbxFile)
+		if err == nil {
+			t.Fatalf("Expected error for End Select without Select, got nil")
+		}
+	})
+
+	t.Run("Nested: Select Case inside If", func(t *testing.T) {
+		tmpDir := t.TempDir()
+		vbxFile := filepath.Join(tmpDir, "select_nested.vbx")
+		content := []byte("Dim flag = 1\nDim val = 2\nIf flag == 1 Then\nSelect Case val\nCase 2\nPrint \"Two\"\nEnd Select\nEnd If")
+		if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+			t.Fatalf("Failed to write file: %v", err)
+		}
+		cCode, err := Transpile(vbxFile)
+		if err != nil {
+			t.Fatalf("Transpile failed: %v", err)
+		}
+		if !strings.Contains(cCode, "if ((flag == 1LL)) {") || !strings.Contains(cCode, "if ((val == 2LL)) {") {
+			t.Errorf("Unexpected C code for nested Select Case inside If:\n%s", cCode)
+		}
+	})
+}
