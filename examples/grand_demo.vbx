@@ -1,0 +1,71 @@
+' ═══════════════════════════════
+' VBX Grand Demo
+' Demonstrates all Tier 1 features
+' ═══════════════════════════════
+
+' 1. Constants
+Const MAX = 100
+Const APP = "VBX Grand Demo"
+Print APP & " - Max: " & Str(MAX)
+
+' 2. Select Case with numbers
+Dim score = 85
+Select Case score
+    Case 100
+        Print "Perfect!"
+    Case 90, 95
+        Print "Excellent!"
+    Case 80, 85
+        Print "Very Good"
+    Case Else
+        Print "Keep trying"
+End Select
+
+' 3. Select Case with strings
+Dim lang = "VBX"
+Select Case lang
+    Case "Python"
+        Print "Snake language"
+    Case "VBX"
+        Print "The best language!"
+    Case Else
+        Print "Unknown language"
+End Select
+
+' 4. Do While with Exit Do
+Dim x = 0
+Do While x < 100
+    x = x + 1
+    If x = 42 Then
+        Exit Do
+    End If
+Loop
+Print "Stopped at: " & Str(x)
+
+' 5. Do...Loop While
+Dim counter = 5
+Do
+    counter = counter - 1
+Loop While counter > 0
+Print "Counter: " & Str(counter)
+
+' 6. Math functions
+Print "Abs(-7) = " & Str(Abs(-7))
+Print "Sqr(144) = " & Str(Sqr(144))
+Dim r = Rnd()
+Print "Rnd between 0 and 1: OK"
+
+' 7. String functions
+Dim sentence = "  Hello VBX World  "
+Print "Trim: " & Trim(sentence)
+Print "InStr: " & Str(InStr(sentence, "VBX"))
+Print "Replace: " & Replace("aabbcc", "bb", "XX")
+
+' 8. Arrays
+Dim scores(5)
+scores(0) = 100
+scores(1) = 95
+scores(2) = 87
+Print "Score 0: " & Str(scores(0))
+Print "Score 1: " & Str(scores(1))
+Print "Score 2: " & Str(scores(2))

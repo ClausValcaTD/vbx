@@ -5,11 +5,11 @@ Const APP_NAME = "VBX Tier-1 Demo"
 Print "Starting " & APP_NAME
 
 Dim scores(MAX_COUNT)
-Dim names[MAX_COUNT]
+Dim names(MAX_COUNT)
 
 For i = 0 To MAX_COUNT - 1
     scores(i) = (i + 1) * 10
-    names[i] = "Item_" & Str(scores[i])
+    names(i) = "Item_" & Str(scores[i])
 Next i
 
 Print "Populated arrays:"
@@ -18,7 +18,7 @@ For i = 0 To MAX_COUNT - 1
         Print "Early exit at index " & i
         Exit For
     End If
-    Print names[i] & " has score: " & Str(scores(i))
+    Print names(i) & " has score: " & Str(scores(i))
 Next i
 
 Dim strVal = "123"

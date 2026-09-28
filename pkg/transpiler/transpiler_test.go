@@ -1641,3 +1641,32 @@ func TestStringStdlibTranspileAndRun(t *testing.T) {
 		}
 	})
 }
+
+
+func TestGrandDemo(t *testing.T) {
+	cCode, err := Transpile("../../examples/grand_demo.vbx")
+	if err != nil {
+		t.Fatalf("Grand demo transpile failed: %v", err)
+	}
+
+	checks := []string{
+		"if (",          // Select Case
+		"else if (",     // Select Case multi
+		"while (",       // Do While
+		"do {",          // Do...Loop While
+		"llabs(",        // Abs integer
+		"sqrt(",         // Sqr
+		"srand(",        // Rnd init
+		"vbx_trim(",     // Trim
+		"vbx_instr(",    // InStr
+		"vbx_replace(",  // Replace
+		"scores[",     // Array
+		"MAX",           // Const
+	}
+
+	for _, check := range checks {
+		if !strings.Contains(cCode, check) {
+			t.Errorf("Expected C output to contain: %s", check)
+		}
+	}
+}
