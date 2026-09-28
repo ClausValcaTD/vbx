@@ -1670,3 +1670,33 @@ func TestGrandDemo(t *testing.T) {
 		}
 	}
 }
+
+
+func TestTranspileInputBoxTerminalFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	vbxFile := filepath.Join(tmpDir, "test_inputbox_fallback.vbx")
+	content := []byte(`
+Dim input = InputBox("Enter command")
+Print input
+`)
+	if err := os.WriteFile(vbxFile, content, 0644); err != nil {
+		t.Fatalf("Failed to write temp vbx file: %v", err)
+	}
+
+	cCode, err := Transpile(vbxFile)
+	if err != nil {
+		t.Fatalf("Transpile failed: %v", err)
+	}
+
+	expectedSnippets := []string{
+		"if (fgets(buf, sizeof(buf), stdin) != NULL)",
+		"while (len > 0 && (buf[len-1] == '\\r' || buf[len-1] == '\\n'))",
+		"buf[--len] = '\\0';",
+	}
+
+	for _, snippet := range expectedSnippets {
+		if !strings.Contains(cCode, snippet) {
+			t.Errorf("Expected snippet %q in generated C code, but not found.\nGenerated C code:\n%s", snippet, cCode)
+		}
+	}
+}
