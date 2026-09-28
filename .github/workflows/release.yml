@@ -1,42 +1,117 @@
-name: Build & Release
+# .github/workflows/release.yml
+
+name: Release VBX
 
 on:
   push:
     tags:
       - 'v*'
   workflow_dispatch:
-
-permissions:
-  contents: write
+    inputs:
+      version:
+        description: 'Version label (e.g. v0.1.0-alpha)'
+        required: true
+        default: 'v0.1.0-alpha'
+      prerelease:
+        description: 'Is this a pre-release?'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
-  release:
-    name: Build Cross-Platform Binaries
+  build:
+    name: Build (${{ matrix.os }}-${{ matrix.arch }})
     runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        include:
+          - os: windows
+            arch: amd64
+            ext: .exe
+            asset: vbx-windows-amd64.exe
+
+          - os: windows
+            arch: arm64
+            ext: .exe
+            asset: vbx-windows-arm64.exe
+
+          - os: linux
+            arch: amd64
+            ext: ""
+            asset: vbx-linux-amd64
+
+          - os: linux
+            arch: arm64
+            ext: ""
+            asset: vbx-linux-arm64
+
+          - os: darwin
+            arch: amd64
+            ext: ""
+            asset: vbx-macos-amd64
+
+          - os: darwin
+            arch: arm64
+            ext: ""
+            asset: vbx-macos-arm64
+
     steps:
-      - name: Checkout Code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Go
+      - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24'
 
-      - name: Compile Binaries
-        run: |
-          mkdir -p dist
-          # Windows AMD64
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/vbx-windows-amd64.exe ./cmd/vbx
-          # Linux AMD64
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/vbx-linux-amd64 ./cmd/vbx
-          # macOS Intel & Apple Silicon
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/vbx-macos-amd64 ./cmd/vbx
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/vbx-macos-arm64 ./cmd/vbx
-
-      - name: Upload Binaries to GitHub Release
-        uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          files: dist/*
+      - name: Build
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: 0
+        run: |
+          go build \
+            -ldflags="-s -w -X main.Version=${{ github.ref_name || inputs.version }}" \
+            -o ${{ matrix.asset }} \
+            ./cmd/vbx
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name || inputs.version }}
+          name: "VBX ${{ github.ref_name || inputs.version }}"
+          body_path: .github/RELEASE_NOTES.md
+          draft: false
+          prerelease: ${{ inputs.prerelease || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'beta') }}
+          files: |
+            artifacts/vbx-windows-amd64.exe
+            artifacts/vbx-windows-arm64.exe
+            artifacts/vbx-linux-amd64
+            artifacts/vbx-linux-arm64
+            artifacts/vbx-macos-amd64
+            artifacts/vbx-macos-arm64
