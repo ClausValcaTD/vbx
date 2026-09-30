@@ -169,8 +169,8 @@ vbx version
 - [x] Standard File I/O (`File.Write`, `File.Read`)
 - [x] Standalone Binary Compiler (`vbx build` with `-O2`)
 - [x] 1D Arrays (`Dim arr(size)`)
-- [ ] VS Code Extension (Syntax Highlighting & Run integration)
-- [ ] Lightweight Dedicated Visual IDE (**VBX Studio**)
+- [x] VS Code Extension (Syntax Highlighting & Run integration)
+- [x] Lightweight Dedicated Visual IDE (**VBX Studio**)
 - [ ] Embedded SQLite3 Database Support
 
 ---
